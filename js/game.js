@@ -66,9 +66,9 @@ const up = t => t === "easy" ? "normal" : "hard";
 
 /* ================= captains + home-grown ================= */
 // every name knows its country and fame; the most famous player in a squad is its captain
-const HOME = {}, FAME = {};
+const HOME = {}, FAME = {}, HOME_NAT = {};   // name -> territory, fame, exact country code
 const POS = {};
-for (const id of IDS) for (const [n, f, ps] of GAME[id].p) if (!(n in HOME)) { HOME[n] = id; FAME[n] = f; POS[n] = ps || "M"; }
+for (const id of IDS) for (const [n, f, ps, nat] of GAME[id].p) if (!(n in HOME)) { HOME[n] = id; FAME[n] = f; POS[n] = ps || "M"; if (nat) HOME_NAT[n] = nat; }
 function captainOf(id) { let c = null; for (const n of S.squad[id]) if (c === null || (FAME[n] || 0) > (FAME[c] || 0)) c = n; return c; }
 // home crowd: a home-grown captain makes the first question of an attack one level harder
 const homeCrowd = id => { const c = captainOf(id); return !!c && HOME[c] === id; };
@@ -162,6 +162,31 @@ function dl(a, b) {
     if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
   }
   return d[m][n];
+}
+// country names for the territory member codes ("dk" -> Denmark), for the scouting screen and its hints
+const regionName = (() => { let dn = null; try { dn = new Intl.DisplayNames(["en"], { type: "region" }); } catch (e) {}
+  const SPECIAL = { gb: "England, Scotland, Wales, Northern Ireland", england: "England", "fr-yugoslavia": "Yugoslavia", "serbia-and-montenegro": "Serbia & Montenegro", "cura-ao": "Curaçao", xk: "Kosovo" };
+  return c => SPECIAL[c] || (dn && dn.of(c.toUpperCase())) || c.toUpperCase(); })();
+const HIDE_IN_LIST = new Set(["england", "fr-yugoslavia", "serbia-and-montenegro"]);
+const memberNames = id => T[id].members.filter(c => !HIDE_IN_LIST.has(c)).map(regionName).join(", ");
+// a name that isn't from this territory: is it a well-known player from another one? (checked on Sign only)
+function otherTerritory(typed, here) {
+  const k = norm(typed); if (k.length < 3) return null;
+  let best = null;
+  const look = (fuzzy) => {
+    for (const tid of IDS) {
+      if (tid === here) continue;
+      const N = nationIndex(tid);
+      let cand = N.idx.get(k);
+      if (!cand && fuzzy) for (const [key, list] of N.idx) if (Math.abs(key.length - k.length) <= 1 && dl(key, k) <= 1) { cand = list; break; }
+      if (!cand) continue;
+      for (const i of cand) { const p = N.players[i]; if (!best || p[1] > best.f) best = { tid, name: p[0], f: p[1] }; }
+    }
+  };
+  look(false);
+  if (!best && k.length >= 7) look(true);   // one wrong letter in a longer name ("bendter"), as when signing
+  if (!best) return null;
+  return Object.assign(best, { country: regionName(HOME_NAT[best.name] || T[best.tid].members[0]).split(",")[0] });
 }
 function resolveName(N, typed, fuzzy) {
   const k = norm(typed); if (k.length < 3) return { kind: "miss" };
@@ -298,21 +323,24 @@ const svg = $("map"), NS = "http://www.w3.org/2000/svg";
 let vb = { x: 0, y: 0, w: WORLD.w, h: WORLD.h };
 const VIEWS = { world: { x: 0, y: 0, w: WORLD.w, h: WORLD.h }, europe: { x: 430, y: 60, w: 190, h: 120 } };
 // on a tall screen open on Europe + Africa so the map fills the height
-function homeView() { const r = svg.getBoundingClientRect(); if (!r.width || r.width / r.height > 1.3) return { ...VIEWS.world }; const h = 380, w = Math.max(220, h * r.width / r.height); return { x: 510 - w / 2, y: 40, w, h }; }
+function homeView() { const r = mapRect(); if (!r.width || r.width / r.height > 1.3) return { ...VIEWS.world }; const h = 380, w = Math.max(220, h * r.width / r.height); return { x: 510 - w / 2, y: 40, w, h }; }
 const RM = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
 let fast = false;   // "Skip replay" during computer turns
 const SHIRT = "M-7,-9 L-3,-11 Q0,-7.5 3,-11 L7,-9 L12.5,-4 L8.5,0.5 L7,-1 L7,10 Q0,11.5 -7,10 L-7,-1 L-8.5,0.5 L-12.5,-4 Z";
-function curUnit() { const r = svg.getBoundingClientRect(); return Math.max(vb.w / (r.width || 360), vb.h / (r.height || 400)); }
+// the map's box on screen (the container: the svg itself is scaled and moved while you drag or zoom)
+function mapRect() { return $("mapwrap").getBoundingClientRect(); }
+function curUnit() { const r = mapRect(); return Math.max(vb.w / (r.width || 360), vb.h / (r.height || 400)); }
 function buildMap() {
   svg.innerHTML = `<defs><clipPath id="floodclip"><circle id="floodc" r="0"/></clipPath></defs>`;
   const g = document.createElementNS(NS, "g");
-  // old-atlas water lines: rings of coastline, alternating ink and sea colour, widths in screen pixels
-  const ring = (w, style) => `<path d="${WORLD.land}" data-w="${w}" style="${style}"/>`;
-  g.innerHTML = `<path class="grat" d="${WORLD.grat}"/>` +
-    `<g class="water">${ring(22, "stroke:var(--line);opacity:.07")}${ring(17, "stroke:var(--sea)")}${ring(12, "stroke:var(--line);opacity:.11")}${ring(8, "stroke:var(--sea)")}${ring(4.5, "stroke:var(--line);opacity:.18")}</g>` +
-    `<path class="neutral-land" d="${WORLD.neutral}"/>` +
-    WORLD.territories.map(t => `<path class="terr" id="t-${t.id}" data-id="${t.id}" d="${t.d}"/>`).join("") +
-    `<g id="fx"></g><path class="borders" d="${WORLD.borders}"/>` +
+
+  // the sea layer (its own svg): graticule, water rings, unclaimed land. It never changes during play, so a
+  // country changing colour or a flood doesn't make the browser repaint the expensive coastline rings.
+  $("sea").innerHTML = `<path class="grat" d="${WORLD.grat}"/><g id="seaLo">${seaGroup(WORLD.land, WORLD.neutral)}</g><g id="seaHi" style="display:none"></g>`;
+  // two versions of the countries and borders, coarse and detailed; zooming only shows one and hides the other
+  g.innerHTML = `<g id="terrLo">` + WORLD.territories.map(t => `<path class="terr" id="t-${t.id}" data-id="${t.id}" d="${t.d}"/>`).join("") + `</g>` +
+    `<g id="terrHi" style="display:none"></g>` +
+    `<g id="fx"></g><path class="borders" id="bordLo" d="${WORLD.borders}"/><path class="borders" id="bordHi" style="display:none"/>` +
     WORLD.sea.map(([a, b]) => { const A = T[a], B = T[b]; return `<line class="sealink" x1="${A.x}" y1="${A.y}" x2="${B.x}" y2="${B.y}"/>`; }).join("");
   svg.appendChild(g);
   $("pmap").innerHTML = `<g id="arcs"></g><g id="badges">` +
@@ -321,15 +349,32 @@ function buildMap() {
     `</g><g id="pfx"></g><g id="floats"></g>`;
   applyView();
 }
+/* SMOOTH PANNING AND ZOOMING: while you drag, wheel or the camera flies, the drawn map is only moved and
+   scaled as a picture (a CSS transform on both layers, done by the graphics card). The real redraw
+   (applyView: new viewBox, line widths, piece sizes, the detailed map) happens once the movement stops. */
+let committed = { ...vb }, commitT = 0;
+const LAYERS = () => [$("sea"), svg, $("pmap")];
+function vbScreen(v, W, H) { const u = Math.max(v.w / W, v.h / H); return { u, ox: (W - v.w / u) / 2, oy: (H - v.h / u) / 2 }; }
+function previewView() {
+  const r = mapRect(), W = r.width || 1, H = r.height || 1, c = vbScreen(committed, W, H), t = vbScreen(vb, W, H), k = c.u / t.u;
+  const tx = -c.ox * k + (committed.x - vb.x) / t.u + t.ox, ty = -c.oy * k + (committed.y - vb.y) / t.u + t.oy;
+  const tf = `translate(${tx.toFixed(2)}px,${ty.toFixed(2)}px) scale(${k.toFixed(5)})`;
+  for (const l of LAYERS()) l.style.transform = tf;
+}
+function commitSoon(ms = 140) { clearTimeout(commitT); commitT = setTimeout(applyView, ms); }
 function applyView() {
+  clearTimeout(commitT);
+  for (const l of LAYERS()) l.style.transform = ""; committed = { ...vb };
   svg.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
   $("pmap").setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+  $("sea").setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
   const unit = curUnit();
   setDetail(unit);
-  svg.style.setProperty("--sw", (unit * 0.9).toFixed(3));
-  svg.style.setProperty("--sw2", (unit * 2.4).toFixed(3));
-  svg.style.setProperty("--dash", `${(unit * 4).toFixed(2)} ${(unit * 3).toFixed(2)}`);
-  svg.querySelectorAll(".water path").forEach(p => p.style.strokeWidth = (+p.dataset.w * unit).toFixed(3));
+  const mw = $("mapwrap").style;   // line widths for all three layers
+  mw.setProperty("--sw", (unit * 0.9).toFixed(3));
+  mw.setProperty("--sw2", (unit * 2.4).toFixed(3));
+  mw.setProperty("--dash", `${(unit * 4).toFixed(2)} ${(unit * 3).toFixed(2)}`);
+  $("sea").querySelectorAll(".water path").forEach(p => p.style.strokeWidth = (+p.dataset.w * unit).toFixed(3));
   // pieces stay about 22 px tall at any zoom; crowded spots (Benelux, Balkans) show 1 piece until you zoom in
   const k = (unit * PIECE_K).toFixed(4);
   for (const t of WORLD.territories) $("p-" + t.id).setAttribute("transform", `translate(${t.x} ${t.y}) scale(${k})`);
@@ -342,20 +387,44 @@ function applyView() {
   }
   Pieces.wake();
 }
-// level of detail: the light 1:110m shapes at the world view, the 1:50m ones (data/world-hi.js) once you zoom in
-// past ~2.5x, where the coarse coastlines turn into jagged straight lines. Only the path data is swapped.
-let detail = "lo";
-function setDetail(unit) {
-  const H = window.TK_WORLD_HI, want = H && unit < .4 ? "hi" : "lo";
-  if (want === detail) return;
-  detail = want;
-  for (const t of WORLD.territories) $("t-" + t.id).setAttribute("d", want === "hi" ? H.territories[t.id] : t.d);
-  const set = (sel, d) => svg.querySelectorAll(sel).forEach(p => p.setAttribute("d", d));
-  set(".neutral-land", want === "hi" ? H.neutral : WORLD.neutral);
-  set(".borders", want === "hi" ? H.borders : WORLD.borders);
-  set(".water path", want === "hi" ? H.land : WORLD.land);
+// old-atlas water lines: rings of coastline, alternating ink and sea colour, widths in screen pixels; then unclaimed land
+function seaGroup(land, neutral) {
+  const ring = (w, style) => `<path d="${land}" data-w="${w}" style="${style}"/>`;
+  // one soft ring (was five: they were 80-85% of every redraw once you zoom in past the world view)
+  return `<g class="water">${ring(9, "stroke:var(--line);opacity:.13")}</g>` +
+    `<path class="neutral-land" d="${neutral}"/>`;
 }
-window.addEventListener("load", () => { if (S || svg.isConnected) applyView(); });   // the detail file arrives after the game starts
+// level of detail: the light 1:110m shapes at the world view, the 1:50m ones (data/world-hi.js) once you zoom in
+// past ~2.5x, where the coarse coastlines turn into jagged straight lines. Both versions are built once (the detailed
+// one in the background after the page loads); zooming only shows one and hides the other, so nothing is re-read.
+let detail = "lo", hiBuilt = false;
+function buildHi() {
+  const H = window.TK_WORLD_HI; if (!H || hiBuilt) return;
+  hiBuilt = true;
+  $("seaHi").innerHTML = seaGroup(H.ringLand || H.land, H.neutral);   // rings on the simplified coast (see build-map.js)
+  $("terrHi").innerHTML = WORLD.territories.map(t => `<path class="terr" id="h-${t.id}" data-id="${t.id}" d="${H.territories[t.id]}"/>`).join("");
+  $("bordHi").setAttribute("d", H.borders);
+  if (S) paint();
+  const unit = curUnit(); $("sea").querySelectorAll(".water path").forEach(p => p.style.strokeWidth = (+p.dataset.w * unit).toFixed(3));
+}
+function setDetail(unit) {
+  const want = window.TK_WORLD_HI && unit < .4 ? "hi" : "lo";
+  if (want === detail) return;
+  if (want === "hi") buildHi();
+  detail = want;
+  const hi = want === "hi";
+  // visibility, not display: a hidden version keeps its geometry, so showing it again costs nothing to re-read
+  for (const [lo, h] of [["seaLo", "seaHi"], ["terrLo", "terrHi"], ["bordLo", "bordHi"]]) {
+    $(lo).style.visibility = hi ? "hidden" : ""; $(h).style.visibility = hi ? "" : "hidden"; $(lo).style.display = ""; $(h).style.display = "";
+  }
+}
+// the territory's shape that's on show right now (for the flood)
+const terrEl = id => (detail === "hi" && $("h-" + id)) || $("t-" + id);
+// the detail file arrives after the game starts: build it while nothing is happening, then apply the view
+window.addEventListener("load", () => {
+  const go = () => { buildHi(); applyView(); };
+  if (window.requestIdleCallback) requestIdleCallback(go, { timeout: 2500 }); else setTimeout(go, 300);
+});
 // a piece is 64 units tall in its own drawing, x1.22: 78 units. 22 px on a phone, 30 px on a desktop.
 const isDesk = () => !!(window.matchMedia && matchMedia("(min-width: 1024px)").matches);
 let PIECE_K = 22 / 78, CROWD_PX = 19;
@@ -390,7 +459,7 @@ function drawBadges() {
       if (P) P.figs.forEach(f => f.remove());
       const grp = g.querySelector(".pgrp"), base = baseOf(id), neutral = S.owner[id] == null;
       const figs = specs.map(p => Pieces.make(grp, { base, kit: p.kit, name: p.name, num: p.num, captain: p.captain, home: p.captain && home,
-        x: p.spot[0], y: p.spot[1], s: 1, idle: !neutral }));
+        x: p.spot[0], y: p.spot[1], s: 1, idle: false }));
       const plq = g.querySelector(".plq"); plq.innerHTML = "";
       const frontY = specs.length ? specs[specs.length - 1].spot[1] : 0;
       // the plaque is drawn 2.6x the piece scale, so the count reads at about 9 px on a phone
@@ -402,18 +471,24 @@ function drawBadges() {
     if (P.plaque.t.textContent !== String(n)) P.plaque.t.textContent = n;
     if (lastCount[id] != null && lastCount[id] !== n && !RM) { const q = P.plaque.inner; q.classList.remove("bump"); void q.getBoundingClientRect(); q.classList.add("bump"); }
     lastCount[id] = n;
-    const r = sel === id ? 35 : 10;   // the selected squad raises its arms a little
-    P.figs.forEach(f => { if (f.raiseL !== r) { f.raiseL = f.raiseR = r; Pieces.redraw(f); } });
+    // the selected squad raises its arms a little and is the only one that moves while idle: 42 squads bobbing at
+    // once meant repainting every piece 30 times a second
+    const r = sel === id ? 35 : 10, live = sel === id && S.owner[id] != null;
+    P.figs.forEach(f => { if (f.raiseL !== r || f.idle !== live) { f.raiseL = f.raiseR = r; f.idle = live; Pieces.redraw(f); } });
+    if (live) Pieces.wake();
   }
   GV.badges();
 }
 function paint() {
   for (const t of WORLD.territories) {
-    const el = $("t-" + t.id);
-    el.style.fill = colorOf(t.id);
-    el.style.fillOpacity = S.owner[t.id] == null ? .55 : .82;
-    el.classList.toggle("sel", sel === t.id);
-    el.classList.toggle("target", !!(sel && isHuman(S.seat) && S.owner[sel] === S.seat && S.phase === "attack" && T[sel].nb.includes(t.id) && S.owner[t.id] !== S.seat));
+    const target = !!(sel && isHuman(S.seat) && S.owner[sel] === S.seat && S.phase === "attack" && T[sel].nb.includes(t.id) && S.owner[t.id] !== S.seat);
+    for (const el of [$("t-" + t.id), $("h-" + t.id)]) {   // both the coarse and the detailed shape
+      if (!el) continue;
+      el.style.fill = colorOf(t.id);
+      el.style.fillOpacity = S.owner[t.id] == null ? .55 : .82;
+      el.classList.toggle("sel", sel === t.id);
+      el.classList.toggle("target", target);
+    }
   }
   drawBadges();
   GV.paint();
@@ -455,7 +530,7 @@ function viewFor(ids, frac = 1) {
     x0 = Math.min(x0, Math.max(b.x, t.x - 110)); x1 = Math.max(x1, Math.min(b.x + b.width, t.x + 110));
     y0 = Math.min(y0, Math.max(b.y, t.y - 70)); y1 = Math.max(y1, Math.min(b.y + b.height, t.y + 70));
   }
-  const r = svg.getBoundingClientRect();
+  const r = mapRect();
   if (frac < 1 && isDesk()) {   // desktop: the panel covers the right 460 px, frame the action in what's left
     const fx = Math.max(.35, (r.width - 460) / r.width), ar = (r.width * fx) / r.height;
     let w = Math.max(120, (x1 - x0) * 1.5), h = Math.max(80, (y1 - y0) * 1.6);
@@ -471,7 +546,7 @@ function viewFor(ids, frac = 1) {
 function flyTo(ids, ms = 650, frac = 1) {
   if (GV.on) return GV.flyTo(ids, ms, frac);
   const from = { ...vb }, to = viewFor(ids, frac);
-  return tween(ms, k => { vb = { x: from.x + (to.x - from.x) * k, y: from.y + (to.y - from.y) * k, w: from.w + (to.w - from.w) * k, h: from.h + (to.h - from.h) * k }; applyView(); });
+  return tween(ms, k => { vb = { x: from.x + (to.x - from.x) * k, y: from.y + (to.y - from.y) * k, w: from.w + (to.w - from.w) * k, h: from.h + (to.h - from.h) * k }; previewView(); }).then(applyView);
 }
 // a gold (or rival-coloured) arc with a ball running along it; returns a function that clears it
 // little players in the attacker's kit run the arc, legs swinging, one after the other
@@ -630,7 +705,7 @@ function battleStrip(host, left, right) {
 // the new owner's colour spreads over the territory from the side the attack came from
 async function flood(id, fromId, hex) {
   if (GV.on) return GV.flood(id, fromId, hex);
-  const el = $("t-" + id), c = el.cloneNode();
+  const el = terrEl(id), c = el.cloneNode();
   c.removeAttribute("id"); c.removeAttribute("data-id"); c.setAttribute("class", "floodfill");
   c.style.fill = hex; c.style.fillOpacity = .82; c.setAttribute("clip-path", "url(#floodclip)");
   const A = T[fromId], b = el.getBBox();
@@ -666,12 +741,12 @@ svg.addEventListener("pointerdown", e => { if (GV.on) return; svg.setPointerCapt
 svg.addEventListener("pointermove", e => {
   if (!pts.has(e.pointerId)) return;
   pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  const r = svg.getBoundingClientRect(), unit = Math.max(drag.vb.w / r.width, drag.vb.h / r.height);
+  const r = mapRect(), unit = Math.max(drag.vb.w / r.width, drag.vb.h / r.height);
   if (pts.size === 1 && drag.pts.size === 1) {
     const p0 = [...drag.pts.values()][0], p = pts.get(e.pointerId);
     const dx = p.x - p0.x, dy = p.y - p0.y;
     if (Math.hypot(dx, dy) > 6) moved = true;
-    if (moved) { vb.x = drag.vb.x - dx * unit; vb.y = drag.vb.y - dy * unit; clampView(); applyView(); }
+    if (moved) { vb.x = drag.vb.x - dx * unit; vb.y = drag.vb.y - dy * unit; clampView(); previewView(); }
   } else if (pts.size === 2) {
     if (drag.pts.size !== 2) drag = { vb: { ...vb }, pts: new Map(pts) };
     const [a0, b0] = [...drag.pts.values()], [a, b] = [...pts.values()];
@@ -680,20 +755,20 @@ svg.addEventListener("pointermove", e => {
     zoomAt(drag.vb, k, cx, cy, r); moved = true;
   }
 });
-const endPtr = e => { pts.delete(e.pointerId); if (pts.size === 0) drag = null; else drag = { vb: { ...vb }, pts: new Map(pts) }; };
+const endPtr = e => { pts.delete(e.pointerId); if (pts.size === 0) { drag = null; if (moved) applyView(); } else drag = { vb: { ...vb }, pts: new Map(pts) }; };
 svg.addEventListener("pointerup", e => { const wasTap = !moved && pts.size === 1; endPtr(e); if (wasTap) { const t = document.elementFromPoint(e.clientX, e.clientY); if (t && t.dataset && t.dataset.id) tapTerritory(t.dataset.id); } });
 svg.addEventListener("pointercancel", endPtr);
-svg.addEventListener("wheel", e => { if (GV.on) return; e.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt({ ...vb }, e.deltaY > 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top, r); }, { passive: false });
+svg.addEventListener("wheel", e => { if (GV.on) return; e.preventDefault(); const r = mapRect(); zoomAt({ ...vb }, e.deltaY > 0 ? 1.15 : 1 / 1.15, e.clientX - r.left, e.clientY - r.top, r); }, { passive: false });
 function zoomAt(base, k, cx, cy, r) {
   const unit = Math.max(base.w / r.width, base.h / r.height);
   const mx = base.x + cx * unit, my = base.y + cy * unit;
   const w = Math.min(WORLD.w * 1.2, Math.max(60, base.w * k)), h = w * base.h / base.w;
   vb = { x: mx - (mx - base.x) * (w / base.w), y: my - (my - base.y) * (h / base.h), w, h };
-  clampView(); applyView();
+  clampView(); previewView(); commitSoon();
 }
 function clampView() { vb.x = Math.min(WORLD.w - vb.w * .2, Math.max(-vb.w * .8, vb.x)); vb.y = Math.min(WORLD.h - vb.h * .2, Math.max(-vb.h * .8, vb.y)); }
 document.querySelectorAll("[data-z]").forEach(b => b.onclick = () => {
-  const z = b.dataset.z, r = svg.getBoundingClientRect();
+  const z = b.dataset.z, r = mapRect();
   if (GV.on) return GV.zoom(z);
   if (VIEWS[z]) { vb = { ...VIEWS[z] }; applyView(); }
   else zoomAt({ ...vb }, z === "in" ? 1 / 1.5 : 1.5, r.width / 2, r.height / 2, r);
@@ -1243,7 +1318,8 @@ function scout(id) {
   layer.innerHTML = `<div class="over">
     <div class="card clockcard"><div class="clock" id="clock">${secs}</div><div class="count">Signed for ${esc(t.name)}<b id="cnt">0</b></div><div class="timebar"><i id="tb"></i></div></div>
     ${S.scoutMode === "type" ? `<form class="typebox" id="f" autocomplete="off"><input id="in" placeholder="A player from ${esc(t.name)}" autocapitalize="words" spellcheck="false" enterkeyhint="done" aria-label="Player name"><button class="pill" type="submit">Sign</button></form>
-      <p class="msg" id="msg">The clock starts with your first letter. Only a player's main nationality counts.</p>`
+      <p class="counts">Counts for ${esc(t.name)}: <b>${esc(memberNames(id))}</b>. Only a player's main nationality counts.</p>
+      <p class="msg" id="msg">The clock starts with your first letter.</p>`
       : `<p class="msg" id="msg">Tap the players from ${esc(t.name)}. A wrong tap costs 2 seconds.</p><div class="taps" id="taps"></div>`}
     <div class="sheetlist"><p class="label">New signings</p><p class="names" id="signed">Nobody yet.</p></div>
     <button class="quiet" id="stop">Stop scouting</button></div>`;
@@ -1275,7 +1351,9 @@ function scout(id) {
       if (r.kind === "hit") { sign(r.i); inp.value = ""; return; }
       if (r.kind === "dup") say(`${N.players[r.i][0]} is already signed by someone this game.`);
       else if (r.kind === "ambig") say("More than one player is called that. Add a first name.");
-      else { say(`Not a ${t.name} player in our database.`); inp.classList.remove("shake"); void inp.offsetWidth; inp.classList.add("shake"); }
+      else { const elsewhere = otherTerritory(inp.value, id);
+        say(elsewhere ? `${elsewhere.name} is from ${elsewhere.country}: he counts for ${T[elsewhere.tid].name}, not ${t.name}.` : `Not a ${t.name} player in our database.`);
+        inp.classList.remove("shake"); void inp.offsetWidth; inp.classList.add("shake"); }
       inp.select();
     });
   } else {
@@ -1702,7 +1780,7 @@ function startScreen() {
   hint(isDesk() ? "<b>New season.</b> Scroll to zoom, drag to pan." : "<b>New season.</b> Pinch or scroll to zoom, drag to pan.");
   drawManagers();
   $("score").innerHTML = "";
-  for (const t of WORLD.territories) { $("t-" + t.id).style.fill = NEUTRAL.hex; $("t-" + t.id).style.fillOpacity = .7; }
+  for (const t of WORLD.territories) for (const el of [$("t-" + t.id), $("h-" + t.id)]) if (el) { el.style.fill = NEUTRAL.hex; el.style.fillOpacity = .7; }
   drawBadges(); GV.paint();
   layer.innerHTML = `<div class="over">
     <div class="card qcard"><div class="qtier">World Tour · you vs 3 computer managers</div>

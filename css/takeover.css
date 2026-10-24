@@ -33,9 +33,14 @@ body { margin: 0; color: var(--ink); font-family: var(--body); background: var(-
 .score i.out { opacity: .4; }
 
 #mapwrap { flex: 1; min-height: 0; position: relative; background: var(--sea) repeating-linear-gradient(115deg, transparent 0 14px, rgba(120,100,60,.06) 14px 15px); touch-action: none; }
-#map { width: 100%; height: 100%; display: block; user-select: none; -webkit-user-select: none; }
+#map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; user-select: none; -webkit-user-select: none; }
+/* three layers, painted in DOM order: sea (static), countries (#map, takes the input), pieces (#pmap) */
+#sea { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 /* the pieces, arcs and effects sit on their own layer: animating them doesn't repaint the map underneath */
-#pmap { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; will-change: transform; overflow: hidden; }
+#pmap { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+/* both layers move as pictures while you drag or zoom (see previewView in game.js) */
+#sea, #map, #pmap { transform-origin: 0 0; will-change: transform; }
+#mapwrap { overflow: hidden; }
 .terr { stroke: none; cursor: pointer; transition: fill .3s; }
 .terr.sel { stroke: var(--gold); stroke-width: var(--sw2); }
 .terr.target { stroke: #fff; stroke-dasharray: var(--dash); stroke-width: var(--sw2); }
@@ -94,7 +99,7 @@ button:focus-visible { outline: 3px solid var(--gold); outline-offset: 2px; }
 .typebox { display: flex; gap: 8px; }
 .typebox input { flex: 1; min-width: 0; font-family: var(--display); font-weight: 800; font-size: 1.3rem; padding: 11px 14px; border: 2px solid #fff; border-radius: 12px; background: var(--cream); color: var(--ink); box-shadow: inset 0 2px 4px rgba(0,0,0,.12); }
 .typebox input:focus { outline: 3px solid var(--gold); }
-.msg { min-height: 1.4em; font-style: italic; font-size: .95rem; margin: -4px 0 0; color: var(--muted); }
+.msg { min-height: 1.4em; font-style: italic; font-size: .95rem; margin-top: -4px; margin-bottom: 0; color: var(--muted); }
 .msg.hit { color: var(--pitch); font-weight: 500; }
 .taps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .tap { font-family: var(--display); font-weight: 800; font-size: .95rem; line-height: 1.1; padding: 12px 6px; min-height: 60px; background: var(--cream); color: var(--ink);
@@ -206,7 +211,7 @@ table.final th { font-size: .68rem; letter-spacing: .14em; text-transform: upper
 .gfl { position: absolute; left: 0; top: 0; font-family: var(--display); font-weight: 900; font-style: italic; font-size: 17px; line-height: 1; white-space: nowrap;
   text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 4px #fff; pointer-events: none; }
 .gfl.gain { color: #1b5e33; } .gfl.loss { color: #6b6a55; }
-.globe-on #map, .globe-on #pmap { visibility: hidden; }
+.globe-on #sea, .globe-on #map, .globe-on #pmap { visibility: hidden; }
 
 /* atlas extras + animation */
 .grat { fill: none; stroke: var(--line); opacity: .13; stroke-width: var(--sw); pointer-events: none; }
@@ -301,3 +306,7 @@ table.final th { font-size: .68rem; letter-spacing: .14em; text-transform: upper
   .over.kickoff > * { max-width: 900px; }
   .pass .who { font-size: 3.2rem; }
 }
+
+/* scouting: which countries count for this territory */
+.counts { margin-top: -4px; margin-bottom: 0;   /* only top/bottom: the overlay centres its children with margin-inline auto */ font-size: .9rem; line-height: 1.45; color: var(--muted); font-style: italic; }
+.counts b { font-family: var(--display); font-style: normal; font-weight: 800; color: var(--ink); }
