@@ -1446,13 +1446,20 @@ function sheetAttack(from, to) {
   if (S.attacksLeft <= 0) return;
   const A = S.squad[from].length - 1, D = S.squad[to].length;
   if (A < 1) { layer.innerHTML = `<div class="sheet"><h2>Not enough players</h2><p class="intro">Keep at least one player at home. Scout or move more players to ${esc(T[from].name)} first.</p><button class="quiet" id="x">Close</button></div>`; $("x").onclick = closeSheet; return; }
+  // how many go: 1 up to everyone but one. Bigger squads hit harder (a right answer knocks out a third of
+  // your attackers' number), but whoever goes can be lost, and the rest stay home to defend.
   layer.innerHTML = `<div class="sheet"><h2>Attack ${esc(T[to].name)}?</h2>
-    <p class="intro">Send ${A} from ${esc(T[from].name)} against ${D} (${esc(ownerName(to))}). The questions are about ${esc(T[to].name)} and start at ${TIER_LABEL[tierFor(D)].toLowerCase()} level.</p>
+    <p class="intro">From ${esc(T[from].name)} (${S.squad[from].length}) against ${D} (${esc(ownerName(to))}). The questions are about ${esc(T[to].name)} and start at ${TIER_LABEL[tierFor(D)].toLowerCase()} level.</p>
+    <label class="mvpick" for="atN"><span>How many attack?</span><input type="range" id="atN" min="1" max="${A}" value="${A}" step="1"><b id="atK">${A}</b></label>
+    <p class="label" id="atInfo"></p>
     <div class="row"><button class="pill" id="go">Attack with ${A}</button><button class="quiet" id="x">Cancel</button></div></div>`;
+  const show = () => { const k = +$("atN").value; $("atK").textContent = k; $("go").textContent = `Attack with ${k}`;
+    $("atInfo").textContent = `A right answer knocks out ${Math.ceil(k / 3)} defender${Math.ceil(k / 3) === 1 ? "" : "s"} · ${S.squad[from].length - k} stay${S.squad[from].length - k === 1 ? "s" : ""} home in ${T[from].name}`; };
+  $("atN").oninput = show; show();
   $("x").onclick = closeSheet;
-  $("go").onclick = () => battle(from, to);
+  $("go").onclick = () => battle(from, to, +$("atN").value);
 }
-async function battle(from, to) {
+async function battle(from, to, count) {
   busy = true; S.attacksLeft--; st().battles++;
   const me = S.seat, kit = SEATS[me], startD = S.squad[to].length;
   closeSheet(); sel = null; paint();
@@ -1461,8 +1468,12 @@ async function battle(from, to) {
   sfx.crowd(2.6, derby ? .45 : .26);
   if (derby) await banner("Derby!", derby, "derby");
   const lastOne = S.owner[to] != null && owned(S.owner[to]).length === 1, defHex = baseOf(to);
-  const clearArc = await attackArc(from, to, kit.hex, S.squad[from].length - 1, best(S.squad[from].slice(1), 5));
-  const sent = S.squad[from].splice(1), lostA = [], lostD = [];
+  // who goes: the best players apart from the captain, who stays home with the rest
+  const capFrom = captainOf(from), k = Math.max(1, Math.min(count || S.squad[from].length - 1, S.squad[from].length - 1));
+  const going = S.squad[from].filter(n => n !== capFrom).sort((a, b) => (FAME[b] || 0) - (FAME[a] || 0)).slice(0, k);
+  const clearArc = await attackArc(from, to, kit.hex, going.length, best(going, 5));
+  S.squad[from] = S.squad[from].filter(n => !going.includes(n));
+  const sent = going, lostA = [], lostD = [];
   let A = sent.length, D = S.squad[to].length, rights = 0, asked = 0, retreat = false, shownA = 0, shownD = 0;
   drawBadges();
   flyTo([from, to], 450, .3);
@@ -2002,7 +2013,7 @@ function openRules() {
         ${confs.map(c => `<tr><td>${c}</td><td class="n">${count(c)}</td><td class="n">+${RULES.confedSecs[c]} s</td><td class="n">+${RULES.confedPts[c]}</td></tr>`).join("")}</tbody></table></section>
 
     <section><h3>2 · Attack <span>up to ${RULES.attacksPerTurn} a turn</span></h3>
-      <p>Tap one of your countries with at least 2 players, then a neighbour with a white dashed edge. Everyone goes except one player, who stays home.</p>
+      <p>Tap one of your countries with at least 2 players, then a neighbour with a white dashed edge, and choose how many attack (at least one always stays home; the captain stays too). More attackers hit harder, but you can lose them, and those who stay home defend.</p>
       <p>The battle is a run of questions <b>about the country you attack</b>, with ${RULES.questionSecs} seconds each.</p>
       <ul>
         <li><b>Right answer:</b> the defenders lose a third of your squad's size, rounded up.</li>
