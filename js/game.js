@@ -8,7 +8,7 @@ const RULES = {
   baseSecs: 15, perTerr: 0.5, maxSecs: 60,
   confedSecs: { UEFA: 14, AFC: 8, CAF: 10, CONMEBOL: 6, CONCACAF: 5, OFC: 2 },
   confedPts: { UEFA: 7, AFC: 4, CAF: 5, CONMEBOL: 3, CONCACAF: 3, OFC: 1 },
-  attacksPerTurn: 2, lastStandsPerRound: 1, squadCap: 30, questionSecs: 15,
+  attacksPerTurn: 2, movesPerTurn: 3, lastStandsPerRound: 1, squadCap: 30, questionSecs: 15,
   botRate: 0.4, botAcc: { easy: .85, normal: .65, hard: .45 },
 };
 const SEATS = [
@@ -227,12 +227,13 @@ function upgradeSave() {
   if (typeof S.lastStands !== "object") S.lastStands = { 0: S.lastStands == null ? RULES.lastStandsPerRound : S.lastStands };
   S.news ||= {}; S.st ||= {};
   S.managers ||= 4;
+  if (S.movesLeft == null) { S.movesLeft = S.moved ? 0 : RULES.movesPerTurn; delete S.moved; }
   if (!S.order) { S.order = activeSeats(); S.turn = S.order.indexOf(S.seat); }
   if (S.stats && !S.st[0]) S.st[0] = Object.assign(newStats(), S.stats);
 }
 // a new season starts with an empty map: the kick-off ceremony rolls for the order and hands out the countries
 function newGame(rounds, scoutMode, humans = 1, names = [], managers = 4) {
-  S = { round: 1, rounds, scoutMode, humans, names, seat: 0, phase: "setup", attacksLeft: RULES.attacksPerTurn, moved: false,
+  S = { round: 1, rounds, scoutMode, humans, names, seat: 0, phase: "setup", attacksLeft: RULES.attacksPerTurn, movesLeft: RULES.movesPerTurn,
         lastStands: {}, owner: {}, squad: {}, used: {}, qUsed: {}, log: [], over: false, st: {}, news: {}, order: [], turn: -1, managers };
   S.order = activeSeats();
   for (let k = 0; k < humans; k++) S.lastStands[k] = RULES.lastStandsPerRound;
@@ -1267,7 +1268,7 @@ function refresh() {
   if (S.phase === "setup") { hint("<b>Kick-off.</b>"); return; }
   if (!isHuman(S.seat)) { hint(`<b>${esc(SEATS[S.seat].name)}</b> is playing…`, fast ? "" : `<button class="quiet" id="skipRep">Skip replay</button>`); const sr = $("skipRep"); if (sr) sr.onclick = () => { fast = true; sr.remove(); }; return; }
   if (S.phase === "scout") hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${isWindow() ? `${monthOf()} transfer window: ${income(S.seat)} seconds, double time.` : `Scouting: ${income(S.seat)} seconds.`}</b> ${tapWord()} one of your countries to scout it.`, `<button class="quiet" id="skipScout">Skip</button>`);
-  else hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${S.attacksLeft} attack${S.attacksLeft === 1 ? "" : "s"} left.</b> ${tapWord()} your country, then a neighbour. ${S.moved ? "" : "You can also move players once."}`, `<button class="pill" id="endTurn">End turn</button>`);
+  else hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${S.attacksLeft ? `${S.attacksLeft} attack${S.attacksLeft === 1 ? "" : "s"} left.</b> ${tapWord()} your country, then a neighbour.` : `No attacks left.</b>`} ${S.movesLeft <= 0 ? "" : S.attacksLeft ? `${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left too.` : `${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left: ${tapWord(false)} your country, then a neighbouring one of yours.`}`, `<button class="pill" id="endTurn">End turn</button>`);
   const sk = $("skipScout"); if (sk) sk.onclick = () => { S.phase = "attack"; save(); refresh(); };
   const et = $("endTurn"); if (et) et.onclick = endTurn;
 }
@@ -1278,7 +1279,7 @@ function tapTerritory(id) {
   // second tap: attack or move from the selected territory
   if (sel && sel !== id && S.owner[sel] === S.seat && S.phase === "attack" && T[sel].nb.includes(id)) {
     if (S.owner[id] !== S.seat) return sheetAttack(sel, id);
-    if (!S.moved) return sheetMove(sel, id);
+    if (S.movesLeft > 0) return sheetMove(sel, id);
   }
   sel = id; paint(); sheetTerritory(id);
 }
@@ -1287,8 +1288,8 @@ function sheetTerritory(id) {
   let actions = "";
   if (mine && S.phase === "scout") actions = `<button class="pill" id="scoutHere">Scout ${esc(t.name)} · ${income(S.seat)} s</button>`;
   else if (mine && S.phase === "attack") actions = sq.length >= 2 && S.attacksLeft > 0
-    ? `<p class="label">Now tap a neighbour with a white dashed edge to attack it${S.moved ? "" : ", or one of yours to move players"}.</p>`
-    : `<p class="label">${S.attacksLeft === 0 ? "No attacks left this turn." : "You need at least 2 players here to attack."}</p>`;
+    ? `<p class="label">Now tap a neighbour with a white dashed edge to attack it${S.movesLeft > 0 ? ", or one of yours to move players" : ""}.</p>`
+    : `<p class="label">${S.attacksLeft === 0 ? (S.movesLeft > 0 ? `No attacks left. You can still move players (${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left): pick a neighbouring country of yours.` : "No attacks or moves left this turn.") : "You need at least 2 players here to attack."}</p>`;
   layer.innerHTML = `<div class="sheet">
     <div class="row"><h2><span class="sw" style="background:${colorOf(id)}"></span>${esc(t.name)}</h2><button class="quiet close" id="x">Close</button></div>
     <p class="label">${esc(ownerName(id))} · ${sq.length} player${sq.length === 1 ? "" : "s"} · ${esc(t.confed)}</p>
@@ -1299,19 +1300,38 @@ function sheetTerritory(id) {
   $("x").onclick = () => { sel = null; closeSheet(); paint(); };
   const sh = $("scoutHere"); if (sh) sh.onclick = () => scout(id);
 }
+// moving players: pick how many (1 up to everyone but one; never more than the target country has room for).
+// The captain stays at home so the home crowd isn't lost by accident; the best of the others go first.
 function sheetMove(from, to) {
-  const n = S.squad[from].length - 1;
-  if (n < 1) return;
+  const all = S.squad[from].length - 1, room = RULES.squadCap - S.squad[to].length, max = Math.min(all, room);
+  if (all < 1) return;
+  if (max < 1) { layer.innerHTML = `<div class="sheet"><h2>No room</h2><p class="intro">${esc(T[to].name)} already has ${RULES.squadCap} players, the most a squad can hold.</p><button class="quiet" id="x">Close</button></div>`; $("x").onclick = closeSheet; return; }
+  const cap = captainOf(from);
+  const order = () => S.squad[from].filter(n => n !== cap).sort((a, b) => (FAME[b] || 0) - (FAME[a] || 0));   // who goes first
+  let k = max;
   layer.innerHTML = `<div class="sheet"><h2>Move players</h2>
-    <p class="intro">Move ${n} player${n === 1 ? "" : "s"} from ${esc(T[from].name)} to ${esc(T[to].name)}? One move per turn.</p>
-    <div class="row"><button class="pill" id="mv">Move ${n}</button><button class="quiet" id="x">Cancel</button></div></div>`;
+    <p class="intro">From ${esc(T[from].name)} (${S.squad[from].length}) to ${esc(T[to].name)} (${S.squad[to].length}). ${S.movesLeft} of ${RULES.movesPerTurn} moves left this turn.</p>
+    <label class="mvpick" for="mvN"><span>How many?</span><input type="range" id="mvN" min="1" max="${max}" value="${max}" step="1"><b id="mvK">${max}</b></label>
+    <p class="label" id="mvAfter"></p>
+    <p class="names" id="mvWho"></p>
+    ${room < all ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem">${esc(T[to].name)} only has room for ${room} more (a squad holds ${RULES.squadCap}).</p>` : ""}
+    <div class="row"><button class="pill" id="mv">Move ${max}</button><button class="quiet" id="x">Cancel</button></div></div>`;
+  const show = () => {
+    k = +$("mvN").value;
+    $("mvK").textContent = k; $("mv").textContent = `Move ${k}`;
+    $("mvAfter").textContent = `After the move: ${T[from].name} ${S.squad[from].length - k} · ${T[to].name} ${S.squad[to].length + k}`;
+    const who = order().slice(0, k);
+    $("mvWho").innerHTML = who.slice(0, 6).map(esc).join(" · ") + (who.length > 6 ? ` <span style="font-weight:600">+ ${who.length - 6} more</span>` : "");
+  };
+  $("mvN").oninput = show; show();
   $("x").onclick = () => { closeSheet(); };
   $("mv").onclick = async () => {
+    const go = order().slice(0, k);
     closeSheet(); busy = true;
-    await moveScene(from, to, S.squad[from].slice(1), n);
-    const go = S.squad[from].splice(1);
-    S.squad[to].push(...go); S.squad[to] = S.squad[to].slice(0, RULES.squadCap);
-    S.moved = true; sel = null; busy = false; save(); refresh();
+    await moveScene(from, to, go, go.length);
+    S.squad[from] = S.squad[from].filter(n => !go.includes(n));
+    S.squad[to].push(...go);
+    S.movesLeft--; sel = null; busy = false; save(); refresh();
     floatText(from, "−" + go.length, "loss"); floatText(to, "+" + go.length, "gain");
   };
 }
@@ -1432,7 +1452,10 @@ async function battle(from, to) {
         sfx.whistle("short");
         const keeper = S.owner[to] == null ? { shirt: NEUTRAL.hex, ink: NEUTRAL.ink } : { shirt: SEATS[S.owner[to]].hex, ink: SEATS[S.owner[to]].ink };
         const keeperOdds = ({ easy: .2, normal: .27, hard: .34 })[tier] + (derby ? .05 : 0);
+        const defSeat = S.owner[to], humanKeeper = isHuman(defSeat);   // a person in goal picks the dive themselves
         const res = await Penalty.take({ host: $("mapwrap"), attacker: { shirt: kit.hex, ink: kit.ink }, keeperKit: keeper, saveChance: keeperOdds,
+          shooter: "human", keeper: humanKeeper ? "human" : "cpu", shooterName: SEATS[me].name, keeperName: humanKeeper ? SEATS[defSeat].name : "",
+          keeperTitle: humanKeeper ? `${SEATS[defSeat].name}, you're in goal!` : "", keeperLine: humanKeeper ? `${SEATS[me].name} wants ${T[to].name}. Pick where your keeper dives: guess the corner and it's saved.` : "",
           title: "Penalty!", line: `${captainOf(to) || "The last defender"} is all that stands between you and ${T[to].name}. Pick your corner.`,
           onResult: r => r === "scored" ? sfx.roar(.45) : sfx.groan() });
         if (res) { st(me).pens++; if (res === "scored") st(me).pensScored++; }
@@ -1512,7 +1535,7 @@ async function advance() {
 // a human player's turn: sacked check, then (with more than one person) the pass-the-phone screen
 async function startTurn(seat, newRound) {
   if (S.order.some(k => owned(k).length === IDS.length)) { busy = false; save(); return checkEnd(); }
-  S.seat = seat; S.phase = "scout"; S.attacksLeft = RULES.attacksPerTurn; S.moved = false;
+  S.seat = seat; S.phase = "scout"; S.attacksLeft = RULES.attacksPerTurn; S.movesLeft = RULES.movesPerTurn;
   if (!owned(seat).length) { toast(`<b>${esc(SEATS[seat].name)}</b> ${solo() ? "were" : "was"} sacked. New job!`); const nid = rehire(seat); busy = true; await dropIn(nid); busy = false; }
   save(); refresh();
   const sub = isWindow() ? "Transfer window · double scouting time" : S.round === S.rounds ? "Final day of the season" : (solo() ? "Your turn" : `${SEATS[seat].name}'s turn`);
@@ -1578,6 +1601,19 @@ async function botBattle(seat, from, to) {
   while (A > 0 && D > 0 && A >= D * 0.9) {
     if (Math.random() < RULES.botAcc[derby ? up(tierFor(D)) : tierFor(D)]) { rights++; const loss = Math.ceil(A / 3); D = rights < 2 ? Math.max(1, D - loss) : D - loss; }
     else { const loss = Math.ceil(D / 3); for (let k = 0; k < loss && sent.length; k++) sent.splice(Math.floor(Math.random() * sent.length), 1); A = sent.length; }
+  }
+  // the final blow on a person's country is a penalty, with that person in goal picking the dive
+  if (D <= 0 && isHuman(defender) && S.pens !== false) {
+    const wasFast = fast; fast = false;
+    await flyTo([from, to], 400, .3);
+    sfx.whistle("short");
+    const res = await Penalty.take({ host: $("mapwrap"), attacker: { shirt: SEATS[seat].hex, ink: SEATS[seat].ink }, keeperKit: { shirt: SEATS[defender].hex, ink: SEATS[defender].ink },
+      shooter: "cpu", keeper: "human", title: "Penalty against you!",
+      keeperTitle: solo() ? "You're in goal!" : `${SEATS[defender].name}, you're in goal!`,
+      keeperLine: `${SEATS[seat].name} ${/s$/.test(SEATS[seat].name) ? "are" : "is"} about to take ${T[to].name}. Pick where your keeper dives: guess their corner and the country holds.`,
+      onResult: r => r === "saved" ? sfx.roar(.45) : sfx.groan() });
+    fast = wasFast;
+    if (res === "saved") { D = 1; feed(`<b>${esc(SEATS[defender].name)}</b> saved a penalty: ${esc(T[to].name)} holds.`); }
   }
   removePlayers(to, S.squad[to].length - Math.max(0, D));
   if (startD - Math.max(0, D)) floatText(to, "\u2212" + (startD - Math.max(0, D)), "loss");
@@ -1801,7 +1837,7 @@ function startScreen() {
     <ol class="rules">
       <li><b>Transfer window.</b> Tap one of your countries and name as many of its players as you can. Your time is 15 seconds + ½ per country you own + bonuses for full confederations.</li>
       <li><b>Attack</b> a neighbour, up to twice a turn. Questions are about the country you attack. A right answer knocks out a third of your squad's size in defenders, a wrong one costs you players. A country falls on your second right answer at the earliest.</li>
-      <li><b>Move</b> players once a turn between two of your countries that border each other.</li>
+      <li><b>Move</b> players up to ${RULES.movesPerTurn} times a turn between two of your countries that border each other, and choose how many go.</li>
       <li>Colours: <b>you are gold</b> (with friends: gold, blue, claret, teal in that order); the computers take the colours that are left. The numbers are squad sizes.</li>
       <li><b>The deciding penalty:</b> the blow that would take a country is a penalty. Pick a corner; if the keeper saves it, one defender stays and the battle goes on.</li>
       <li><b>Last stand:</b> once a round, when a computer is about to take one of your countries, you get one question to save it.</li>
@@ -1891,8 +1927,8 @@ function openRules() {
       </ul>
       <div class="example"><p><b>Example.</b> You attack with 7 against 3. First right answer: 7 ÷ 3 = 3 knocked out, but a country never falls on the first right answer, so 1 defender stays. You answer wrong: 1 ÷ 3 rounds up to 1, so you lose one player (6 left). Second right answer: the last defender goes and the country is yours. All 6 move in.</p></div></section>
 
-    <section><h3>3 · Move players <span>once a turn</span></h3>
-      <p>Tap one of your countries, then a neighbouring country you also own. Everyone except one player moves across. Use it to strengthen a border before you end your turn.</p></section>
+    <section><h3>3 · Move players <span>up to ${RULES.movesPerTurn} times a turn</span></h3>
+      <p>Tap one of your countries, then a neighbouring country you also own, and choose how many players go (at least one always stays). The captain stays at home, the best of the others go first. You can do it before or after your attacks, until you end your turn. A squad holds at most 30 players.</p></section>
 
     <section><h3>The season <span>rounds are months</span></h3>
       <p>A game is a football season. A 10-round game runs from August to May, a 6-round game skips some months, and a 15-round game runs into a second season. August and January are transfer windows with double scouting time. The last round is the final day of the season.</p></section>
@@ -1908,7 +1944,7 @@ function openRules() {
       <p>After you end your turn, the three computer managers play one after the other. They scout, then attack up to ${RULES.attacksPerTurn} times, usually when they have half as many players again as the defenders. Tap <b>Skip replay</b> to see the result straight away.</p></section>
 
     <section><h3>The deciding penalty</h3>
-      <p>When your answer would take a country, you take a penalty instead: tap a corner of the goal. Score and the country is yours. If the keeper saves it, one defender stays on and the battle goes on. The keeper guesses right more often against harder defences and in derbies (about 1 in 5 on easy, 1 in 3 on hard). You can switch penalties off on the start screen.</p></section>
+      <p>When your answer would take a country, you take a penalty instead: tap a corner of the goal. Score and the country is yours; if the keeper saves it, one defender stays on and the battle goes on. A computer keeper guesses right more often against harder defences and in derbies (about 1 in 5 on easy, 1 in 3 on hard). When the keeper is a person, they pick the dive themselves: the device goes over without showing the shot. And when a computer is about to take one of your countries, you're in goal: pick where your keeper dives, guess their corner and the country holds with one player. You can switch penalties off on the start screen.</p></section>
 
     <section><h3>Playing with friends</h3>
       <p>Choose 2 to 4 players on the start screen and type your names. Everyone gets a colour (gold, blue, claret, teal) and you pass the phone between turns; a "Pass the phone" screen shows what happened to that player since their last turn. Computer managers fill the empty seats and play after the last person. Every person gets their own Last stand each round.</p></section>

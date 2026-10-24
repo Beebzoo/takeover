@@ -32,6 +32,9 @@ const Penalty = (() => {
   font-size: 3.2rem; color: #f3cd6b; text-shadow: 0 3px 0 #7a5a10, 0 6px 18px rgba(0,0,0,.6); pointer-events: none; opacity: 0; transition: opacity .25s; }
 .pen .verdict.show { opacity: 1; }
 .pen .verdict.saved { color: #F8F1DD; text-shadow: 0 3px 0 #3b3524, 0 6px 18px rgba(0,0,0,.6); }
+.pen .handover { position: absolute; inset: 0; background: rgba(5,14,8,.96); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 16px; z-index: 2; }
+.pen .handover .who { font-family: var(--display, "Barlow Semi Condensed", sans-serif); font-weight: 900; font-style: italic; font-size: 2rem; color: #F8F1DD; font-style: italic; }
+.pen .pen-go { font-family: var(--display, "Barlow Semi Condensed", sans-serif); font-weight: 900; font-style: italic; font-size: 1.1rem; background: linear-gradient(180deg, #f6d57c, #c99a2e); color: #241B08; border: 0; border-radius: 999px; padding: 11px 22px; box-shadow: 0 5px 0 #7a5a10; cursor: pointer; }
 .pen .tip { font-family: var(--display, "Barlow Semi Condensed", sans-serif); font-style: normal; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; font-size: .72rem; color: #8FB79E; }
 @media (prefers-reduced-motion: reduce) { .pen .spot { animation: none; } }`;
 
@@ -329,16 +332,40 @@ const Penalty = (() => {
     const LBL = { tl: "Top left", tr: "Top right", bl: "Bottom left", br: "Bottom right" };
     for (const k of ["tl", "tr", "bl", "br"]) { const b = document.createElement("button"); b.className = "spot"; b.dataset.k = k; b.setAttribute("aria-label", LBL[k]);
       b.style.left = pos[k][0] + "%"; b.style.top = pos[k][1] + "%"; stage.appendChild(b); }
-    const shot = await new Promise(res => {
-      const auto = setTimeout(() => res(["tl", "tr", "bl", "br"][Math.floor(Math.random() * 4)]), 9000);
-      stage.querySelectorAll(".spot").forEach(b => b.onclick = () => { clearTimeout(auto); res(b.dataset.k); });
+    // who decides: the shooter picks a corner if a person shoots (o.shooter !== "cpu"); a person in goal
+    // (o.keeper === "human") picks where the keeper dives. Person v person: the device is handed over between.
+    const CORNERS = ["tl", "tr", "bl", "br"], rnd = () => CORNERS[Math.floor(Math.random() * 4)];
+    const tip = el.querySelector(".tip"), head = el.querySelector("h2"), line = el.querySelector("p");
+    const pick = (tipText) => new Promise(res => {
+      tip.textContent = tipText;
+      stage.querySelectorAll(".spot").forEach(b => b.classList.remove("hide"));
+      const auto = setTimeout(() => done(rnd()), 12000);
+      const done = k => { clearTimeout(auto); stage.querySelectorAll(".spot").forEach(b => { b.classList.add("hide"); b.onclick = null; }); tip.textContent = ""; res(k); };
+      stage.querySelectorAll(".spot").forEach(b => b.onclick = () => done(b.dataset.k));
     });
-    stage.querySelectorAll(".spot").forEach(b => b.classList.add("hide"));
-    el.querySelector(".tip").textContent = "";
-    // the keeper guesses: right corner with the defence's save chance, else one of the other three
-    const saved = Math.random() < (o.saveChance == null ? .25 : o.saveChance);
-    const others = ["tl", "tr", "bl", "br"].filter(k => k !== shot);
-    W.setShot(shot, saved ? shot : others[Math.floor(Math.random() * 3)], saved ? "saved" : "scored");
+    const shooterHuman = o.shooter !== "cpu", keeperHuman = o.keeper === "human";
+    let shot, dive, saved;
+    if (shooterHuman) shot = await pick(o.shotTip || (matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " a corner of the goal");
+    else shot = rnd();
+    if (keeperHuman) {
+      if (shooterHuman) {   // hand the device over without showing the shot
+        const ho = document.createElement("div"); ho.className = "handover";
+        ho.innerHTML = `<p class="who">${esc(o.keeperName ? "Over to " + o.keeperName : "Over to the keeper")}</p><p>${esc(o.shooterName || "The shooter")} has picked a corner. Don't look!</p><button class="pen-go">${esc(o.keeperName ? "I'm " + o.keeperName + ", I'm in goal" : "I'm in goal")}</button>`;
+        stage.appendChild(ho);
+        await new Promise(r => ho.querySelector("button").onclick = r);
+        ho.remove();
+      }
+      head.textContent = o.keeperTitle || "In goal!";
+      line.textContent = o.keeperLine || "Pick the corner your keeper dives to. Guess right and it's saved.";
+      dive = await pick((matchMedia("(pointer: fine)").matches ? "Click" : "Tap") + " where your keeper dives");
+      saved = dive === shot;
+    } else {
+      // a computer keeper guesses: right with the defence's save chance, else one of the other three corners
+      saved = Math.random() < (o.saveChance == null ? .25 : o.saveChance);
+      const others = CORNERS.filter(k => k !== shot);
+      dive = saved ? shot : others[Math.floor(Math.random() * 3)];
+    }
+    W.setShot(shot, saved ? shot : (dive === shot ? CORNERS.find(k => k !== shot) : dive), saved ? "saved" : "scored");
     if (o.onKick) o.onKick();
     await new Promise(res => { const t0 = performance.now(); const step = now => { const u = Math.min(1, (now - t0) / W.DUR); W.frame(u); if (u < 1) requestAnimationFrame(step); else res(); }; requestAnimationFrame(step); });
     const v = el.querySelector(".verdict"); v.textContent = saved ? "Saved!" : "GOAL!"; v.classList.toggle("saved", saved); v.classList.add("show");

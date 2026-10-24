@@ -321,3 +321,9 @@ table.final th { font-size: .68rem; letter-spacing: .14em; text-transform: upper
 .confirm-card p { margin: 0; line-height: 1.5; }
 /* the dice: one card per manager in the game (2, 3 or 4) */
 @media (min-width: 1024px) { .dice-grid { grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); } .over.kickoff > * { max-width: calc(var(--cols, 4) * 225px); } }
+
+/* moving players: how many */
+.mvpick { display: grid; grid-template-columns: auto minmax(0, 1fr) 2.6em; align-items: center; gap: 12px; }
+.mvpick span { font-family: var(--display); font-weight: 800; font-size: .74rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.mvpick input { width: 100%; accent-color: var(--gold); min-width: 0; }
+.mvpick b { font-family: var(--display); font-weight: 900; font-style: italic; font-size: 1.7rem; text-align: right; font-variant-numeric: tabular-nums; }
