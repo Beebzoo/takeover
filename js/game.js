@@ -10,6 +10,11 @@ const RULES = {
   confedPts: { UEFA: 7, AFC: 4, CAF: 5, CONMEBOL: 3, CONCACAF: 3, OFC: 1 },
   attacksPerTurn: 2, movesPerTurn: 3, lastStandsPerRound: 1, squadCap: 30, questionSecs: 15,
   botRate: 0.4, botAcc: { easy: .85, normal: .65, hard: .45 },
+  // computer strength: how fast they scout and how often they answer right (Medium = the simulated balance)
+  levels: { easy: { rate: .28, acc: { easy: .7, normal: .5, hard: .3 }, keeper: -.06 },
+            medium: { rate: .4, acc: { easy: .85, normal: .65, hard: .45 }, keeper: 0 },
+            hard: { rate: .52, acc: { easy: .93, normal: .8, hard: .62 }, keeper: .06 } },
+  stadiumPts: 5, motmPts: 2, underdogSecs: 5, underdogGap: 3,
 };
 const SEATS = [
   { name: "You", short: "You", color: "var(--you)", hex: "#e9b84c", ink: "#241B08" },
@@ -226,7 +231,7 @@ function upgradeSave() {
   S.humans ||= 1; S.names ||= ["You"];
   if (typeof S.lastStands !== "object") S.lastStands = { 0: S.lastStands == null ? RULES.lastStandsPerRound : S.lastStands };
   S.news ||= {}; S.st ||= {};
-  S.managers ||= 4;
+  S.managers ||= 4; S.bonus ||= {}; S.level ||= "medium";
   if (S.movesLeft == null) { S.movesLeft = S.moved ? 0 : RULES.movesPerTurn; delete S.moved; }
   if (!S.order) { S.order = activeSeats(); S.turn = S.order.indexOf(S.seat); }
   if (S.stats && !S.st[0]) S.st[0] = Object.assign(newStats(), S.stats);
@@ -254,17 +259,30 @@ function autoSign(id) {
   S.squad[id].push("Youth player"); return "Youth player";
 }
 const save = () => store.set("tk-map-game", S);
+const lvl = () => RULES.levels[(S && S.level) || "medium"] || RULES.levels.medium;
+// home stadiums: one country per manager, harder to attack and worth points to whoever holds it
+const stadiumOf = seat => S && S.stadiums ? S.stadiums[seat] : null;
+const isStadium = id => !!(S && S.stadiums && Object.values(S.stadiums).includes(id));
+const stadiumSeatOf = id => { if (!S || !S.stadiums) return null; for (const k in S.stadiums) if (S.stadiums[k] === id) return +k; return null; };
+// the underdog: well behind the leader on points -> extra scouting time
+function isUnderdog(seat) {
+  const others = S.order.filter(k => k !== seat).map(basePoints);
+  return others.length && Math.max(...others) - basePoints(seat) >= RULES.underdogGap;
+}
 const owned = seat => IDS.filter(id => S.owner[id] === seat);
 function income(seat) {
   const mine = owned(seat);
-  let s = RULES.baseSecs + RULES.perTerr * mine.length;
+  let s = RULES.baseSecs + RULES.perTerr * mine.length + (S && S.order && isUnderdog(seat) ? RULES.underdogSecs : 0);
   for (const c of CONFEDS) if (IDS.filter(id => T[id].confed === c).every(id => S.owner[id] === seat)) s += RULES.confedSecs[c];
   const mult = S && isWindow() ? 2 : 1;   // August and January: double time
   return Math.min(RULES.maxSecs * mult, Math.round(s * mult));
 }
-function points(seat) {
+// points without the underdog check (used by it, so no loop): countries, confederations, players, stadiums, bonuses
+function points(seat) { return basePoints(seat); }
+function basePoints(seat) {
   const mine = owned(seat);
-  let p = mine.length;
+  let p = mine.length + ((S.bonus && S.bonus[seat]) || 0);
+  if (S.stadiums) for (const k in S.stadiums) if (S.owner[S.stadiums[k]] === seat) p += RULES.stadiumPts;
   for (const c of CONFEDS) if (IDS.filter(id => T[id].confed === c).every(id => S.owner[id] === seat)) p += RULES.confedPts[c];
   p += Math.floor(mine.reduce((a, id) => a + S.squad[id].length, 0) / 5);
   return p;
@@ -352,7 +370,7 @@ function buildMap() {
   svg.appendChild(g);
   $("pmap").innerHTML = `<g id="arcs"></g><g id="badges">` +
     // drawn north to south, so a piece further down the map stands in front of the one above it
-    WORLD.territories.slice().sort((a, b) => a.y - b.y).map(t => `<g class="pieces" id="p-${t.id}" transform="translate(${t.x} ${t.y})"><g class="pgrp"></g><g class="plq"></g></g>`).join("") +
+    WORLD.territories.slice().sort((a, b) => a.y - b.y).map(t => `<g class="pieces" id="p-${t.id}" transform="translate(${t.x} ${t.y})"><g class="pgrp"></g><g class="plq"></g><g class="mk"></g></g>`).join("") +
     `</g><g id="pfx"></g><g id="floats"></g>`;
   applyView();
 }
@@ -451,6 +469,19 @@ function pieceSpecs(id, k) {
   const order = names.length > 1 ? [...names.slice(1), names[0]] : names;
   return order.map((n, j) => ({ name: n, num: Pieces.number(n, POS[n], n === cap), kit: kitFor(n, id), captain: n === cap, spot: LAYOUT[order.length][j] }));
 }
+// a stadium badge (a little stand with floodlights) and a gold star, drawn in piece units above the squad
+function markerSVG(id) {
+  let out = "", x = 0;
+  const both = isStadium(id) && S.motm === id;
+  if (isStadium(id)) {
+    const c = SEATS[stadiumSeatOf(id)].hex;
+    out += `<g transform="translate(${both ? -34 : 0} -112) scale(3.3)"><circle r="9" fill="${c}" stroke="#fff" stroke-width="1.6"/>
+      <path d="M-5.5,3 L-5.5,-1 Q0,-4 5.5,-1 L5.5,3 Z" fill="#F8F1DD"/><path d="M-5.5,3 L5.5,3" stroke="#241B08" stroke-width=".8"/>
+      <path d="M-4,-1 L-4,-6 M4,-1 L4,-6" stroke="#F8F1DD" stroke-width=".9"/><circle cx="-4" cy="-6.4" r="1.1" fill="#f3cd6b"/><circle cx="4" cy="-6.4" r="1.1" fill="#f3cd6b"/></g>`;
+  }
+  if (S.motm === id) out += `<g transform="translate(${both ? 34 : 0} -112) scale(3.3)"><path d="M0,-9 L2.6,-2.9 L9,-2.8 L4,1.4 L5.6,7.8 L0,4.2 L-5.6,7.8 L-4,1.4 L-9,-2.8 L-2.6,-2.9 Z" fill="#f3cd6b" stroke="#7a5a10" stroke-width="1.1" stroke-linejoin="round"/></g>`;
+  return out;
+}
 const lastCount = {};
 function drawBadges() {
   for (const t of WORLD.territories) {
@@ -476,6 +507,10 @@ function drawBadges() {
       const on = t.x > vb.x && t.x < vb.x + vb.w && t.y > vb.y && t.y < vb.y + vb.h; figs.forEach(f => f.onScreen = on);
     }
     if (P.plaque.t.textContent !== String(n)) P.plaque.t.textContent = n;
+    // markers above the squad: home stadium (in the colour of the manager whose stadium it is) and the gold star
+    const mkKey = (isStadium(id) ? "s" + stadiumSeatOf(id) : "") + (S.motm === id ? "m" : "");
+    const mk = g.querySelector(".mk");
+    if (mk.dataset.k !== mkKey) { mk.dataset.k = mkKey; mk.innerHTML = markerSVG(id); }
     if (lastCount[id] != null && lastCount[id] !== n && !RM) { const q = P.plaque.inner; q.classList.remove("bump"); void q.getBoundingClientRect(); q.classList.add("bump"); }
     lastCount[id] = n;
     // the selected squad raises its arms a little and is the only one that moves while idle: 42 squads bobbing at
@@ -510,7 +545,8 @@ function drawManagers() {
   box.innerHTML = order.map(k => { const s = SEATS[k], mine = owned(k), pl = mine.reduce((a, id) => a + S.squad[id].length, 0), now = S.seat === k && !S.over && S.phase !== "setup";
     return `<div class="mgr${now ? " now" : ""}${mine.length || S.phase === "draft" ? "" : " out"}" style="--c:${s.hex};--ci:${s.ink}">
       <b class="sw"></b><div class="who"><strong>${esc(s.name)}</strong><small>${isHuman(k) ? (solo() ? "You" : "Player") : "Computer"}${now ? " · to play" : ""}</small></div>
-      <div class="nums"><span><b>${points(k)}</b>pts</span><span><b>${mine.length}</b>countries</span><span><b>${pl}</b>players</span></div></div>`; }).join("");
+      <div class="nums"><span><b>${points(k)}</b>pts</span><span><b>${mine.length}</b>countries</span><span><b>${pl}</b>players</span></div>
+      ${S.stadiums && S.stadiums[k] ? `<div class="mgr-extra">Home: ${esc(T[S.stadiums[k]].name)}${S.owner[S.stadiums[k]] !== k ? " (lost!)" : ""}${S.phase !== "draft" && S.order && isUnderdog(k) ? ` · underdog +${RULES.underdogSecs} s` : ""}</div>` : ""}</div>`; }).join("");
 }
 function feed(html) {
   const f = $("feed"); if (!f) return;
@@ -789,7 +825,8 @@ svg.addEventListener("pointermove", e => {
   if (!id) { tip.hidden = true; return; }
   const n = S.squad[id].length, cap = captainOf(id), d = sel && T[sel].nb.includes(id) && S.owner[sel] === S.seat && S.owner[id] !== S.seat ? derbyOf(sel, id) : null;
   tip.innerHTML = `<b style="--c:${colorOf(id)}">${esc(T[id].name)}</b><span>${esc(ownerName(id))} · ${n} player${n === 1 ? "" : "s"}</span>` +
-    (cap ? `<span>Captain: ${esc(cap)}${homeCrowd(id) ? " · home crowd" : ""}</span>` : "") + (d ? `<span class="derby">Derby: ${esc(d)}</span>` : "");
+    (cap ? `<span>Captain: ${esc(cap)}${homeCrowd(id) ? " · home crowd" : ""}</span>` : "") + (d ? `<span class="derby">Derby: ${esc(d)}</span>` : "") +
+    (isStadium(id) ? `<span class="derby">${esc(SEATS[stadiumSeatOf(id)].name)}'s home stadium · ${RULES.stadiumPts} pts</span>` : "") + (S.motm === id ? `<span class="derby">Match of the month · +${RULES.motmPts} pts</span>` : "");
   tip.hidden = false;
   const W = window.innerWidth, x = e.clientX + 16, y = e.clientY + 14;
   tip.style.left = Math.min(x, W - tip.offsetWidth - 8) + "px"; tip.style.top = y + "px";
@@ -1267,7 +1304,7 @@ function refresh() {
   }
   if (S.phase === "setup") { hint("<b>Kick-off.</b>"); return; }
   if (!isHuman(S.seat)) { hint(`<b>${esc(SEATS[S.seat].name)}</b> is playing…`, fast ? "" : `<button class="quiet" id="skipRep">Skip replay</button>`); const sr = $("skipRep"); if (sr) sr.onclick = () => { fast = true; sr.remove(); }; return; }
-  if (S.phase === "scout") hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${isWindow() ? `${monthOf()} transfer window: ${income(S.seat)} seconds, double time.` : `Scouting: ${income(S.seat)} seconds.`}</b> ${tapWord()} one of your countries to scout it.`, `<button class="quiet" id="skipScout">Skip</button>`);
+  if (S.phase === "scout") hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${isWindow() ? `${monthOf()} transfer window: ${income(S.seat)} seconds, double time.` : `Scouting: ${income(S.seat)} seconds.`}${isUnderdog(S.seat) ? ` (+${RULES.underdogSecs} underdog)` : ""}</b> ${tapWord()} one of your countries to scout it.`, `<button class="quiet" id="skipScout">Skip</button>`);
   else hint(`<b>${solo() ? "" : esc(SEATS[S.seat].name) + ": "}${S.attacksLeft ? `${S.attacksLeft} attack${S.attacksLeft === 1 ? "" : "s"} left.</b> ${tapWord()} your country, then a neighbour.` : `No attacks left.</b>`} ${S.movesLeft <= 0 ? "" : S.attacksLeft ? `${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left too.` : `${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left: ${tapWord(false)} your country, then a neighbouring one of yours.`}`, `<button class="pill" id="endTurn">End turn</button>`);
   const sk = $("skipScout"); if (sk) sk.onclick = () => { S.phase = "attack"; save(); refresh(); };
   const et = $("endTurn"); if (et) et.onclick = endTurn;
@@ -1295,6 +1332,8 @@ function sheetTerritory(id) {
     <p class="label">${esc(ownerName(id))} · ${sq.length} player${sq.length === 1 ? "" : "s"} · ${esc(t.confed)}</p>
     <p class="names">${sheetNames(id) || "Nobody"}</p>
     ${homeCrowd(id) ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem">Home crowd: the captain is home-grown, so the first question of any attack here is one level harder.</p>` : ""}
+    ${isStadium(id) ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem"><b>${esc(SEATS[stadiumSeatOf(id)].name)}'s home stadium:</b> questions here are one level harder, and it's worth ${RULES.stadiumPts} points to whoever holds it.</p>` : ""}
+    ${S.motm === id ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem"><b>Match of the month:</b> hold it at the end of ${esc(monthOf())} for +${RULES.motmPts} points.</p>` : ""}
     <p class="label">Neighbours: ${t.nb.map(n => esc(T[n].name)).join(", ")}</p>
     ${actions}</div>`;
   $("x").onclick = () => { sel = null; closeSheet(); paint(); };
@@ -1417,7 +1456,7 @@ async function battle(from, to) {
   busy = true; S.attacksLeft--; st().battles++;
   const me = S.seat, kit = SEATS[me], startD = S.squad[to].length;
   closeSheet(); sel = null; paint();
-  const derby = derbyOf(from, to), home = homeCrowd(to), cap = captainOf(to);
+  const derby = derbyOf(from, to), home = homeCrowd(to), cap = captainOf(to), stadium = isStadium(to), stadSeat = stadiumSeatOf(to);
   await flyTo([from, to], 700);
   sfx.crowd(2.6, derby ? .45 : .26);
   if (derby) await banner("Derby!", derby, "derby");
@@ -1427,7 +1466,7 @@ async function battle(from, to) {
   let A = sent.length, D = S.squad[to].length, rights = 0, asked = 0, retreat = false, shownA = 0, shownD = 0;
   drawBadges();
   flyTo([from, to], 450, .3);
-  const notes = [derby ? `<b>${esc(derby)}</b>: every question is one level harder.` : "", home ? `<b>Home crowd</b>: ${esc(cap)} captains a home-grown side, so the first question is one level harder.` : ""].filter(Boolean);
+  const notes = [stadium ? `<b>${esc(SEATS[stadSeat].name)}'s home stadium</b>: every question is one level harder, and it's worth ${RULES.stadiumPts} points to whoever holds it.` : "", derby ? `<b>${esc(derby)}</b>: every question is one level harder.` : "", home ? `<b>Home crowd</b>: ${esc(cap)} captains a home-grown side, so the first question is one level harder.` : ""].filter(Boolean);
   layer.innerHTML = `<div class="over battle"><div class="tv" id="tv"></div>${notes.length ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem">${notes.join(" ")}</p>` : ""}<div id="striphost"></div><div class="teams" id="teams"></div><div id="qhost"></div>
     <div class="row" style="justify-content:center"><button class="quiet" id="pull">Pull back</button></div></div>`;
   const strip = battleStrip($("striphost"), { base: kit.hex, name: best(sent, 1)[0], kitId: from }, { base: defHex, name: cap, kitId: to, captain: true });
@@ -1442,7 +1481,7 @@ async function battle(from, to) {
   tv();
   $("pull").onclick = () => { retreat = true; $("pull").textContent = "Pulling back after this question"; };
   while (A > 0 && D > 0 && !retreat) {
-    let tier = tierFor(D); if (derby) tier = up(tier); if (home && asked === 0) tier = up(tier);
+    let tier = tierFor(D); if (derby) tier = up(tier); if (home && asked === 0) tier = up(tier); if (stadium) tier = up(tier);
     const ok = await askQuestion(to, tier, $("qhost")); asked++;
     if (ok) {
       rights++; const loss = Math.ceil(A / 3), before = D;
@@ -1451,7 +1490,7 @@ async function battle(from, to) {
       if (D <= 0 && S.pens !== false) {
         sfx.whistle("short");
         const keeper = S.owner[to] == null ? { shirt: NEUTRAL.hex, ink: NEUTRAL.ink } : { shirt: SEATS[S.owner[to]].hex, ink: SEATS[S.owner[to]].ink };
-        const keeperOdds = ({ easy: .2, normal: .27, hard: .34 })[tier] + (derby ? .05 : 0);
+        const keeperOdds = ({ easy: .2, normal: .27, hard: .34 })[tier] + (derby ? .05 : 0) + (isHuman(S.owner[to]) ? 0 : lvl().keeper);
         const defSeat = S.owner[to], humanKeeper = isHuman(defSeat);   // a person in goal picks the dive themselves
         const res = await Penalty.take({ host: $("mapwrap"), attacker: { shirt: kit.hex, ink: kit.ink }, keeperKit: keeper, saveChance: keeperOdds,
           shooter: "human", keeper: humanKeeper ? "human" : "cpu", shooterName: SEATS[me].name, keeperName: humanKeeper ? SEATS[defSeat].name : "",
@@ -1484,6 +1523,7 @@ async function battle(from, to) {
     sfx.roar(derby ? .7 : .55);
     await takeoverScene(from, to, best(sent, 1)[0], cap, kit.hex, defHex, 1, lastOne, () => flood(to, from, kit.hex));
     paint(); floatText(to, "+" + S.squad[to].length, "gain");
+    if (stadium) { feed(`<b>${esc(SEATS[me].name)}</b> took ${stadSeat === me ? "back their" : esc(SEATS[stadSeat].name) + "'s"} home stadium in ${esc(T[to].name)}!`); await banner(stadSeat === me ? "Home again!" : "Stadium taken!", `${T[to].name} · +${RULES.stadiumPts} points`); }
     text = `<h2>${esc(T[to].name)} is yours</h2><p class="intro">${derby ? `You won ${esc(derby)}. ` : ""}${sent.length} player${sent.length === 1 ? "" : "s"} move in: ${sent.map(esc).join(" · ")}.</p>`;
   } else {
     st(me).ko += startD - Math.max(0, D);
@@ -1517,11 +1557,13 @@ async function advance() {
     const n = S.order.length, prev = S.turn;
     S.turn = (S.turn + 1) % n;
     if (prev === n - 1) {   // the order went round: a new month
+      awardMotm();
       S.round++;
       for (let k = 0; k < S.humans; k++) S.lastStands[k] = RULES.lastStandsPerRound;
       if (S.round > S.rounds) { S.seat = S.order[0]; fast = false; busy = false; save(); refresh(); return checkEnd(); }
       fast = false; refresh();
       feed(`<b>${esc(monthOf())}</b>${isWindow() ? ": transfer window open" : ""}.`);
+      newMotm();
       await banner(monthOf(), isWindow() ? "Transfer window · double scouting time" : S.round === S.rounds ? "Final day of the season" : `Round ${S.round} of ${S.rounds}`);
     }
     const seat = S.order[S.turn];
@@ -1568,7 +1610,7 @@ async function botTurn(seat) {
   const mine = owned(seat);
   const border = mine.filter(id => T[id].nb.some(n => S.owner[n] !== seat));
   const target = (border.length ? border : mine).sort((a, b) => threat(seat, b) - threat(seat, a))[0];
-  const n = Math.round(income(seat) * RULES.botRate * (0.8 + Math.random() * 0.4));
+  const n = Math.round(income(seat) * lvl().rate * (0.8 + Math.random() * 0.4));
   await flyTo([target], 550);
   let got = 0;
   for (let k = 0; k < n && S.squad[target].length < RULES.squadCap; k++) { autoSign(target); got++; }
@@ -1599,7 +1641,8 @@ async function botBattle(seat, from, to) {
   let A = sent.length, D = S.squad[to].length, rights = 0;
   drawBadges();
   while (A > 0 && D > 0 && A >= D * 0.9) {
-    if (Math.random() < RULES.botAcc[derby ? up(tierFor(D)) : tierFor(D)]) { rights++; const loss = Math.ceil(A / 3); D = rights < 2 ? Math.max(1, D - loss) : D - loss; }
+    let bt = tierFor(D); if (derby) bt = up(bt); if (isStadium(to)) bt = up(bt);
+    if (Math.random() < lvl().acc[bt]) { rights++; const loss = Math.ceil(A / 3); D = rights < 2 ? Math.max(1, D - loss) : D - loss; }
     else { const loss = Math.ceil(D / 3); for (let k = 0; k < loss && sent.length; k++) sent.splice(Math.floor(Math.random() * sent.length), 1); A = sent.length; }
   }
   // the final blow on a person's country is a penalty, with that person in goal picking the dive
@@ -1628,6 +1671,7 @@ async function botBattle(seat, from, to) {
     S.owner[to] = seat; S.squad[to] = sent;
     if (isHuman(defender)) { sfx.groan(); if (!solo()) (S.news[defender] ||= []).push(`${esc(SEATS[seat].name)} took <b>${esc(T[to].name)}</b> from you.`); } else sfx.roar(.22);
     await takeoverScene(from, to, best(sent, 1)[0], defCap, SEATS[seat].hex, defHex, .5, lastOne, () => flood(to, from, SEATS[seat].hex));
+    if (isStadium(to)) feed(`<b>${esc(SEATS[seat].name)}</b> took the home stadium in ${esc(T[to].name)}!`);
     toast(`<b>${esc(SEATS[seat].name)}</b> takes ${esc(T[to].name)}${isHuman(defender) ? (solo() ? " from you" : ` from ${esc(SEATS[defender].name)}`) : ""}.`);
   } else { S.squad[from].push(...sent); toast(`<b>${esc(SEATS[seat].name)}</b> attacks ${esc(T[to].name)} but it holds.`); }
   clearArc(); paint();
@@ -1677,8 +1721,8 @@ function checkEnd() {
   hint(`<b>${win ? (solo() ? "You win the World Tour." : esc(rows[0].s.name) + " wins the World Tour.") : esc(rows[0].s.name) + " wins this one."}</b>`, `<button class="pill" id="again">New game</button>`);
   const humans = rows.filter(r => isHuman(r.k));
   layer.innerHTML = `<div class="sheet"><h2>${win ? "World Tour won" : "Full time"}</h2>
-    <table class="final"><thead><tr><th>Manager</th><th>Countries</th><th>Players</th><th>Points</th></tr></thead><tbody>
-    ${rows.map(r => `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${r.s.hex};margin-right:6px"></span>${esc(r.s.name)}</td><td>${r.terr}</td><td>${r.players}</td><td>${r.pts}</td></tr>`).join("")}</tbody></table>
+    <table class="final"><thead><tr><th>Manager</th><th>Countries</th><th>Players</th><th>Bonus</th><th>Points</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${r.s.hex};margin-right:6px"></span>${esc(r.s.name)}</td><td>${r.terr}</td><td>${r.players}</td><td>${((S.bonus && S.bonus[r.k]) || 0) + (S.stadiums ? Object.values(S.stadiums).filter(id => S.owner[id] === r.k).length * RULES.stadiumPts : 0)}</td><td>${r.pts}</td></tr>`).join("")}</tbody></table>
     ${humans.map(r => `<p class="label">${solo() ? "Your game" : esc(r.s.name)}: ${st(r.k).battles} battles · ${st(r.k).right} of ${st(r.k).questions} questions right · ${st(r.k).signed} scouted · ${st(r.k).pensScored} of ${st(r.k).pens} penalties</p>`).join("")}
     <div class="row" style="flex-wrap:wrap">${humans.map(r => `<button class="pill" data-xi="${r.k}" style="background:linear-gradient(180deg,#fff7df,${r.s.hex});">${solo() ? "See my Takeover XI" : esc(r.s.short) + "'s XI"}</button>`).join("")}</div>
     <button class="quiet" id="again2">New game</button></div>`;
@@ -1783,13 +1827,44 @@ async function runDraft() {
   for (const id of IDS) if (S.owner[id] == null) claim(id, null);   // what's left stays unclaimed, with a small squad
   delete S.draftI;
 }
+// each manager's home stadium: the country of theirs with the deepest football history (most players in the data)
+function pickStadiums() {
+  S.stadiums = {}; S.bonus = {};
+  for (const k of S.order) { const mine = owned(k); if (!mine.length) continue;
+    S.stadiums[k] = mine.slice().sort((a, b) => GAME[b].p.length - GAME[a].p.length || Math.random() - .5)[0]; }
+}
+async function showStadiums() {
+  paint();
+  for (const k of S.order) if (S.stadiums[k]) feed(`<b>${esc(SEATS[k].name)}</b> play${solo() && k === 0 ? "" : "s"} at home in <b>${esc(T[S.stadiums[k]].name)}</b>.`);
+  const mine = S.order.filter(isHuman).map(k => S.stadiums[k]).filter(Boolean);
+  if (mine.length) { await flyTo(mine, 700); }
+  await banner("Home stadiums", S.order.map(k => `${SEATS[k].short} · ${T[S.stadiums[k]] ? T[S.stadiums[k]].name : "–"}`).join("  ·  "));
+}
+// match of the month: a country on a front line (owned, next to a rival) worth bonus points to whoever holds it at the end of the month
+function newMotm() {
+  const front = IDS.filter(id => S.owner[id] != null && T[id].nb.some(n => S.owner[n] != null && S.owner[n] !== S.owner[id]) && !isStadium(id));
+  const pool = front.length ? front : IDS.filter(id => S.owner[id] != null);
+  S.motm = pick(pool);
+  feed(`<b>Match of the month:</b> ${esc(T[S.motm].name)}. Hold it at the end of ${esc(monthOf())} for +${RULES.motmPts} points.`);
+  paint();
+}
+function awardMotm() {
+  if (!S.motm) return;
+  S.bonus ||= {};
+  const k = S.owner[S.motm];
+  if (k != null) { S.bonus[k] = (S.bonus[k] || 0) + RULES.motmPts; feed(`<b>${esc(SEATS[k].name)}</b> held ${esc(T[S.motm].name)} in ${esc(monthOf())}: +${RULES.motmPts} points.`); floatText(S.motm, "+" + RULES.motmPts + " pts", "gain"); }
+  else feed(`Nobody held ${esc(T[S.motm].name)} in ${esc(monthOf())}.`);
+}
 async function kickOff(cfg) {
   const names = Array.from({ length: cfg.humans }, (_, k) => (cfg.names[k] || "").trim() || `Player ${k + 1}`);
-  newGame(cfg.rounds, cfg.scoutMode, Math.min(cfg.humans, cfg.managers || 4), names, cfg.managers || 4); S.pens = cfg.pens; S.dealMode = cfg.deal;
+  newGame(cfg.rounds, cfg.scoutMode, Math.min(cfg.humans, cfg.managers || 4), names, cfg.managers || 4); S.pens = cfg.pens; S.dealMode = cfg.deal; S.level = cfg.level || "medium";
   closeSheet(); vb = homeView(); applyView(); paint(); busy = true;
   await diceRoll();
   if (S.dealMode === "draft") await runDraft(); else await dealOut();
+  pickStadiums();
   S.phase = "scout"; save(); paint();
+  await showStadiums();
+  newMotm();
   busy = true; sfx.whistle("long");
   await banner("Kick off", `${monthOf()} · transfer window open`);
   feed(`<b>${esc(monthOf())}</b>: the transfer window is open.`);
@@ -1841,13 +1916,15 @@ function startScreen() {
       <li>Colours: <b>you are gold</b> (with friends: gold, blue, claret, teal in that order); the computers take the colours that are left. The numbers are squad sizes.</li>
       <li><b>The deciding penalty:</b> the blow that would take a country is a penalty. Pick a corner; if the keeper saves it, one defender stays and the battle goes on.</li>
       <li><b>Last stand:</b> once a round, when a computer is about to take one of your countries, you get one question to save it.</li>
-      <li>After the last round the most <b>points</b> wins: 1 per country, a bonus per full confederation, 1 per 5 players.</li>
+      <li><b>Home stadiums</b> (badge in your colour): harder to attack, worth ${RULES.stadiumPts} points to whoever holds them. The gold <b>star</b> is the match of the month: hold it at the end of the month for +${RULES.motmPts}. Fall ${RULES.underdogGap} points behind and you get +${RULES.underdogSecs} seconds of scouting.</li>
+      <li>After the last round the most <b>points</b> wins: 1 per country, a bonus per full confederation, 1 per 5 players, plus stadiums and stars.</li>
     </ol>
     <div><p class="label">Rounds</p><div class="row">${[6, 10, 15].map(r => `<button class="chip" data-r="${r}" aria-pressed="${r === cfg.rounds}">${r}</button>`).join("")}</div></div>
     <div><p class="label">Game size</p><div class="row">${[[2, "1 v 1"], [3, "3 managers"], [4, "4 managers"]].map(([n, l]) => `<button class="chip" data-n="${n}" aria-pressed="${n === cfg.managers}">${l}</button>`).join("")}</div></div>
     <div><p class="label">Players on this ${isDesk() ? "computer" : "phone"}</p><div class="row">${[1, 2, 3, 4].filter(h => h <= cfg.managers).map(h => `<button class="chip" data-h="${h}" aria-pressed="${h === cfg.humans}">${h === 1 ? "Just me" : h}</button>`).join("")}</div>
       <p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem;margin-top:6px">Pass and play: each person gets a colour and you ${isDesk() ? "take turns at the computer" : "pass the phone between turns"}. Computers fill the empty seats.</p>
       <div class="names-in" id="namesIn"></div></div>
+    ${comps ? `<div><p class="label">Computer level</p><div class="row">${["easy", "medium", "hard"].map(l => `<button class="chip" data-l="${l}" aria-pressed="${l === (cfg.level || "medium")}">${l[0].toUpperCase() + l.slice(1)}</button>`).join("")}</div></div>` : ""}
     <div><p class="label">The countries</p><div class="row"><button class="chip" data-d="deal" aria-pressed="${cfg.deal === "deal"}">Deal them out</button><button class="chip" data-d="draft" aria-pressed="${cfg.deal === "draft"}">Draft: pick in turn</button></div></div>
     <div><p class="label">Deciding penalty</p><div class="row"><button class="chip" data-p="1" aria-pressed="${cfg.pens}">On</button><button class="chip" data-p="0" aria-pressed="${!cfg.pens}">Off</button></div></div>
     <div><p class="label">Scouting</p><div class="row"><button class="chip" data-m="type" aria-pressed="${cfg.scoutMode === "type"}">Type names</button><button class="chip" data-m="tap" aria-pressed="${cfg.scoutMode === "tap"}">Easy: tap them</button></div></div>
@@ -1865,6 +1942,7 @@ function startScreen() {
   layer.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { cfg.managers = +b.dataset.n; cfg.humans = Math.min(cfg.humans, cfg.managers); store.set("tk-map-cfg", cfg); startScreen(); });
   layer.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { cfg.pens = b.dataset.p === "1"; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-p]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
   layer.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { cfg.deal = b.dataset.d; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-d]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
+  layer.querySelectorAll("[data-l]").forEach(b => b.onclick = () => { cfg.level = b.dataset.l; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-l]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
   $("start").onclick = () => kickOff(cfg);
 }
 
@@ -1893,6 +1971,15 @@ function openRules() {
 
     <section><h3>Game size</h3>
       <p>Play a <b>1 v 1</b> (you against a computer, or two people on one device), or with <b>3 or 4 managers</b>. The computers fill the seats that no person takes. <b>New game</b> at the top starts over at any moment between moves.</p></section>
+
+    <section><h3>Home stadiums</h3>
+      <p>After the countries are handed out, every manager gets a <b>home stadium</b>: the country of theirs with the biggest football history (it has a little stadium badge in their colour). Questions there are one level harder, and a stadium is worth <b>${RULES.stadiumPts} points</b> to whoever holds it, so taking your rival's is the big swing of a season. Lose yours and win it back!</p></section>
+
+    <section><h3>Match of the month</h3>
+      <p>Every month one country on a front line gets a <b>gold star</b>. Whoever holds it at the end of the month gets <b>+${RULES.motmPts} points</b>. A new one is picked each month.</p></section>
+
+    <section><h3>Underdog and computer level</h3>
+      <p>A manager who is ${RULES.underdogGap} or more points behind the leader is the <b>underdog</b> and gets <b>+${RULES.underdogSecs} seconds</b> of scouting each turn. Computers come in three levels on the start screen: Easy (slower scouting, more wrong answers), Medium and Hard.</p></section>
 
     <section><h3>Kick-off</h3>
       <p>Everyone rolls two dice. The highest total kicks off and the turns go round the table from there (ties roll again). Then the countries are handed out: <b>dealt</b> at random, or <b>drafted</b>, where everyone picks an unclaimed country in turn. With four managers that's 10 each (two stay unclaimed), with three 14 each, and in a 1 v 1 21 each. The countries nobody gets stay unclaimed with a small squad. Every country starts with 3 players.</p></section>
@@ -1962,7 +2049,9 @@ function openRules() {
       <table><tbody>
         <tr><td>Every country you own</td><td class="n">1 point</td></tr>
         <tr><td>A confederation you hold completely</td><td class="n">see the table above</td></tr>
-        <tr><td>Every 5 players in your squads</td><td class="n">1 point</td></tr></tbody></table>
+        <tr><td>Every 5 players in your squads</td><td class="n">1 point</td></tr>
+        <tr><td>A home stadium you hold (yours or a rival's)</td><td class="n">${RULES.stadiumPts} points</td></tr>
+        <tr><td>Holding the match of the month at the end of a month</td><td class="n">+${RULES.motmPts} points</td></tr></tbody></table>
       <p style="margin-top:8px">The points on the coloured chips at the top of the screen are the live score.</p></section>
 
     <section><h3>On a computer</h3>

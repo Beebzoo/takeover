@@ -327,3 +327,7 @@ table.final th { font-size: .68rem; letter-spacing: .14em; text-transform: upper
 .mvpick span { font-family: var(--display); font-weight: 800; font-size: .74rem; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
 .mvpick input { width: 100%; accent-color: var(--gold); min-width: 0; }
 .mvpick b { font-family: var(--display); font-weight: 900; font-style: italic; font-size: 1.7rem; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* home stadium + underdog line on the manager cards */
+.mgr-extra { grid-column: 2; font-size: .78rem; font-style: italic; color: var(--muted); }
+.pieces .mk { pointer-events: none; }
