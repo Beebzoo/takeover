@@ -331,3 +331,10 @@ table.final th { font-size: .68rem; letter-spacing: .14em; text-transform: upper
 /* home stadium + underdog line on the manager cards */
 .mgr-extra { grid-column: 2; font-size: .78rem; font-style: italic; color: var(--muted); }
 .pieces .mk { pointer-events: none; }
+
+/* bring players here + counter-attack */
+.bring { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.bring .chip { text-transform: none; letter-spacing: .02em; }
+.counter { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.counter .qtext { margin: 0; }
+.counterline { font-style: italic; color: var(--ink); margin: 4px 0 0; }

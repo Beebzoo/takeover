@@ -14,7 +14,7 @@ const RULES = {
   levels: { easy: { rate: .28, acc: { easy: .7, normal: .5, hard: .3 }, keeper: -.06 },
             medium: { rate: .4, acc: { easy: .85, normal: .65, hard: .45 }, keeper: 0 },
             hard: { rate: .52, acc: { easy: .93, normal: .8, hard: .62 }, keeper: .06 } },
-  stadiumPts: 5, motmPts: 2, underdogSecs: 5, underdogGap: 3,
+  stadiumPts: 5, motmPts: 2, counterLoss: 2, underdogSecs: 5, underdogGap: 3,
 };
 const SEATS = [
   { name: "You", short: "You", color: "var(--you)", hex: "#e9b84c", ink: "#241B08" },
@@ -1335,9 +1335,20 @@ function sheetTerritory(id) {
     ${isStadium(id) ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem"><b>${esc(SEATS[stadiumSeatOf(id)].name)}'s home stadium:</b> questions here are one level harder, and it's worth ${RULES.stadiumPts} points to whoever holds it.</p>` : ""}
     ${S.motm === id ? `<p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem"><b>Match of the month:</b> hold it at the end of ${esc(monthOf())} for +${RULES.motmPts} points.</p>` : ""}
     <p class="label">Neighbours: ${t.nb.map(n => esc(T[n].name)).join(", ")}</p>
-    ${actions}</div>`;
+    ${actions}${bringHtml(id)}</div>`;
   $("x").onclick = () => { sel = null; closeSheet(); paint(); };
   const sh = $("scoutHere"); if (sh) sh.onclick = () => scout(id);
+  layer.querySelectorAll("[data-from]").forEach(b => b.onclick = () => sheetMove(b.dataset.from, id));
+}
+// moving INTO a country: pick where the players come from (your neighbouring countries with players to spare)
+function bringHtml(id) {
+  if (S.owner[id] !== S.seat || S.phase !== "attack" || S.movesLeft <= 0) return "";
+  const room = RULES.squadCap - S.squad[id].length;
+  const from = T[id].nb.filter(n => S.owner[n] === S.seat && S.squad[n].length > 1);
+  if (!from.length) return `<p class="label" style="margin-top:4px">Bring players here: none of your neighbouring countries has players to spare.</p>`;
+  if (room < 1) return `<p class="label" style="margin-top:4px">Bring players here: ${esc(T[id].name)} is full (${RULES.squadCap}).</p>`;
+  return `<div class="bring"><p class="label">Bring players here from · ${S.movesLeft} move${S.movesLeft === 1 ? "" : "s"} left</p><div class="row" style="flex-wrap:wrap">` +
+    from.sort((a, b) => S.squad[b].length - S.squad[a].length).map(n => `<button class="chip" data-from="${n}">${esc(T[n].name)} · ${S.squad[n].length - 1} to spare</button>`).join("") + `</div></div>`;
 }
 // moving players: pick how many (1 up to everyone but one; never more than the target country has room for).
 // The captain stays at home so the home crowd isn't lost by accident; the best of the others go first.
@@ -1520,6 +1531,31 @@ async function battle(from, to, count) {
     }
     tv(); drawBadges();
     await strip.hit(ok, best(sent, 1)[0], captainOf(to));
+    // COUNTER-ATTACK: after a wrong answer the defender gets a question about their own country; right = 2 more of yours go
+    if (!ok && A > 0 && S.owner[to] != null) {
+      const ds = S.owner[to], ct = tierFor(A);
+      let cOk;
+      if (isHuman(ds)) {
+        const ho = document.createElement("div"); ho.className = "counter card";
+        ho.innerHTML = `<div class="qtier">Counter-attack</div><p class="qtext">${solo() && ds === 0 ? "Your" : esc(SEATS[ds].name) + "'s"} chance: answer this one about ${esc(T[to].name)} and ${esc(SEATS[me].name)} lose${SEATS[me].name === "You" ? "" : "s"} ${RULES.counterLoss} more players.</p>
+          <button class="pill" id="ctGo">${solo() ? "Answer" : `I'm ${esc(SEATS[ds].name)}, go`}</button>`;
+        $("qhost").appendChild(ho); sfx.whistle("short");
+        await new Promise(r => $("ctGo").onclick = r); ho.remove();
+        cOk = await askQuestion(to, ct, $("qhost"), ds);
+      } else {
+        cOk = Math.random() < lvl().acc[ct];
+        const ln = document.createElement("p"); ln.className = "verdict counterline";
+        ln.innerHTML = `<b>Counter-attack:</b> ${esc(SEATS[ds].name)} answer${SEATS[ds].name === "You" ? "" : "s"} a question about ${esc(T[to].name)}… ${cOk ? "right!" : "wrong."}`;
+        $("qhost").appendChild(ln); await pause(1100); ln.remove();
+      }
+      if (cOk) {
+        const extra = Math.min(sent.length, RULES.counterLoss);
+        for (let k = 0; k < extra; k++) lostA.push(...sent.splice(Math.floor(Math.random() * sent.length), 1));
+        A = sent.length; floatText(from, "\u2212" + extra, "loss"); feed(`<b>${esc(SEATS[ds].name)}</b> counter-attacked in ${esc(T[to].name)}: ${extra} more of ${esc(SEATS[me].name)}'s players out.`);
+        tv(); drawBadges();
+        await strip.hit(false, best(sent, 1)[0], captainOf(to));
+      }
+    }
   }
   await pause(600);
   strip.remove();
@@ -1654,7 +1690,8 @@ async function botBattle(seat, from, to) {
   while (A > 0 && D > 0 && A >= D * 0.9) {
     let bt = tierFor(D); if (derby) bt = up(bt); if (isStadium(to)) bt = up(bt);
     if (Math.random() < lvl().acc[bt]) { rights++; const loss = Math.ceil(A / 3); D = rights < 2 ? Math.max(1, D - loss) : D - loss; }
-    else { const loss = Math.ceil(D / 3); for (let k = 0; k < loss && sent.length; k++) sent.splice(Math.floor(Math.random() * sent.length), 1); A = sent.length; }
+    else { const loss = Math.ceil(D / 3); for (let k = 0; k < loss && sent.length; k++) sent.splice(Math.floor(Math.random() * sent.length), 1); A = sent.length;
+      if (A > 0 && S.owner[to] != null && !isHuman(S.owner[to]) && Math.random() < lvl().acc[tierFor(A)]) { for (let k = 0; k < RULES.counterLoss && sent.length; k++) sent.splice(Math.floor(Math.random() * sent.length), 1); A = sent.length; } }
   }
   // the final blow on a person's country is a penalty, with that person in goal picking the dive
   if (D <= 0 && isHuman(defender) && S.pens !== false) {
@@ -1664,7 +1701,7 @@ async function botBattle(seat, from, to) {
     const res = await Penalty.take({ host: $("mapwrap"), attacker: { shirt: SEATS[seat].hex, ink: SEATS[seat].ink }, keeperKit: { shirt: SEATS[defender].hex, ink: SEATS[defender].ink },
       shooter: "cpu", keeper: "human", title: "Penalty against you!",
       keeperTitle: solo() ? "You're in goal!" : `${SEATS[defender].name}, you're in goal!`,
-      keeperLine: `${SEATS[seat].name} ${/s$/.test(SEATS[seat].name) ? "are" : "is"} about to take ${T[to].name}. Pick where your keeper dives: guess their corner and the country holds.`,
+      keeperLine: `${SEATS[seat].name} ${SEATS[seat].name === "You" ? "are" : "is"} about to take ${T[to].name}. Pick where your keeper dives: guess their corner and the country holds.`,
       onResult: r => r === "saved" ? sfx.roar(.45) : sfx.groan() });
     fast = wasFast;
     if (res === "saved") { D = 1; feed(`<b>${esc(SEATS[defender].name)}</b> saved a penalty: ${esc(T[to].name)} holds.`); }
@@ -2018,6 +2055,7 @@ function openRules() {
       <ul>
         <li><b>Right answer:</b> the defenders lose a third of your squad's size, rounded up.</li>
         <li><b>Wrong answer or time-out:</b> you lose a third of the defenders' size, rounded up.</li>
+        <li><b>Counter-attack:</b> after your wrong answer the defender gets a question about their own country. Right, and you lose ${RULES.counterLoss} more. A friend answers it themselves (the device goes over); a computer answers at its level. Unclaimed countries don't counter.</li>
         <li>A country can't fall on the first right answer. It falls on your <b>second right answer at the earliest</b>.</li>
         <li>The questions get harder as the defence gets bigger: 1–3 defenders easy, 4–8 medium, 9 or more hard.</li>
         <li>You can <b>pull back</b> after any question. Your players go home.</li>
