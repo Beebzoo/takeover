@@ -19,7 +19,14 @@
     <div class="score" id="score"></div>
     <button class="rulesbtn newbtn" id="newBtn">New game</button>
     <button class="rulesbtn" id="rulesBtn" aria-label="Open the rulebook">Rules</button>
+    <button class="rulesbtn menubtn" id="menuBtn" aria-haspopup="true" aria-expanded="false">Menu</button>
   </header>
+  <div id="menu" class="menu" role="menu" hidden>
+    <button role="menuitem" data-proxy="newBtn">New game</button>
+    <button role="menuitem" data-proxy="rulesBtn">Rules</button>
+    <button role="menuitem" data-proxy="snd" id="mSnd">Sound</button>
+    <button role="menuitem" data-proxy="viewBtn" id="mView">Globe</button>
+  </div>
   <div id="mapwrap">
     <svg id="sea" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
     <svg id="map" xmlns="http://www.w3.org/2000/svg" aria-label="World map"></svg>

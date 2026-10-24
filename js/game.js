@@ -2146,6 +2146,25 @@ function askNewGame() {
   };
 }
 $("newBtn").onclick = askNewGame;
+// phone: one Menu button holds New game, Rules, Sound and Globe; the scores float over the map
+const menu = $("menu"), menuBtn = $("menuBtn");
+function closeMenu() { menu.hidden = true; menuBtn.setAttribute("aria-expanded", "false"); }
+menuBtn.onclick = e => {
+  e.stopPropagation();
+  if (!menu.hidden) return closeMenu();
+  $("mSnd").textContent = $("snd").textContent === "Muted" ? "Sound: off (turn on)" : "Sound: on (mute)";
+  $("mView").textContent = $("viewBtn").textContent === "Map" ? "Switch to the flat map" : "Switch to the globe";
+  menu.hidden = false; menuBtn.setAttribute("aria-expanded", "true"); menu.querySelector("button").focus();
+};
+menu.querySelectorAll("[data-proxy]").forEach(b => b.onclick = () => { closeMenu(); $(b.dataset.proxy).click(); });
+document.addEventListener("click", e => { if (!menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) closeMenu(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !menu.hidden) { closeMenu(); menuBtn.focus(); } });
+function placeScore() {
+  const sc = $("score"), want = isDesk() ? $("newBtn") : $("layer");
+  if (isDesk()) { if (sc.parentNode !== document.querySelector(".band")) document.querySelector(".band").insertBefore(sc, want); sc.classList.remove("float"); }
+  else if (sc.parentNode !== $("mapwrap")) { $("mapwrap").insertBefore(sc, want); sc.classList.add("float"); }
+}
+placeScore(); window.addEventListener("resize", placeScore);
 const sndBtn = $("snd");
 sndBtn.setAttribute("aria-pressed", sfx.on); sndBtn.textContent = sfx.on ? "Sound" : "Muted";
 sndBtn.onclick = () => { const on = sfx.toggle(); sndBtn.setAttribute("aria-pressed", on); sndBtn.textContent = on ? "Sound" : "Muted"; };
