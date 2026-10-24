@@ -209,6 +209,9 @@ let S = null;
 // pass-and-play: seats 0..humans-1 are people on this phone, the rest are computer managers
 const BOT_NAMES = ["You", "Gegenpress", "Parks the Bus", "The Tinkerer"], BOT_SHORT = ["You", "Gegen", "Bus", "Tinker"];
 const isHuman = k => k != null && k < ((S && S.humans) || 1);
+// the managers in this game: seats 0..size-1 (1 v 1 = gold and blue)
+const gameSize = () => (S && S.managers) || 4;
+const activeSeats = () => SEATS.map((_, k) => k).filter(k => k < gameSize());
 const solo = () => !S || (S.humans || 1) === 1;
 const newStats = () => ({ battles: 0, questions: 0, right: 0, signed: 0, ko: 0, derbies: 0, pens: 0, pensScored: 0, signedNames: [], best: "" });
 const st = (k = S.seat) => (S.st ||= {})[k] ||= newStats();
@@ -223,18 +226,21 @@ function upgradeSave() {
   S.humans ||= 1; S.names ||= ["You"];
   if (typeof S.lastStands !== "object") S.lastStands = { 0: S.lastStands == null ? RULES.lastStandsPerRound : S.lastStands };
   S.news ||= {}; S.st ||= {};
-  if (!S.order) { S.order = SEATS.map((_, k) => k); S.turn = S.order.indexOf(S.seat); }
+  S.managers ||= 4;
+  if (!S.order) { S.order = activeSeats(); S.turn = S.order.indexOf(S.seat); }
   if (S.stats && !S.st[0]) S.st[0] = Object.assign(newStats(), S.stats);
 }
 // a new season starts with an empty map: the kick-off ceremony rolls for the order and hands out the countries
-function newGame(rounds, scoutMode, humans = 1, names = []) {
+function newGame(rounds, scoutMode, humans = 1, names = [], managers = 4) {
   S = { round: 1, rounds, scoutMode, humans, names, seat: 0, phase: "setup", attacksLeft: RULES.attacksPerTurn, moved: false,
-        lastStands: {}, owner: {}, squad: {}, used: {}, qUsed: {}, log: [], over: false, st: {}, news: {}, order: SEATS.map((_, k) => k), turn: -1 };
+        lastStands: {}, owner: {}, squad: {}, used: {}, qUsed: {}, log: [], over: false, st: {}, news: {}, order: [], turn: -1, managers };
+  S.order = activeSeats();
   for (let k = 0; k < humans; k++) S.lastStands[k] = RULES.lastStandsPerRound;
   applyNames();
   for (const id of IDS) { S.owner[id] = null; S.squad[id] = []; }
 }
-const PER_MANAGER = Math.floor(IDS.length / 4);   // 10 countries each; the rest stay unclaimed
+// countries each: 10 with four managers (two stay unclaimed), 14 with three, 21 in a 1 v 1
+const perManager = () => Math.floor(IDS.length / gameSize());
 // sign an unused player from this territory: famous-ish, a bit random
 function autoSign(id) {
   const P = GAME[id].p;
@@ -492,14 +498,14 @@ function paint() {
   }
   drawBadges();
   GV.paint();
-  $("score").innerHTML = SEATS.map((s, k) => `<i class="${owned(k).length ? "" : "out"}" style="background:${s.hex};color:${s.ink}" title="${esc(s.name)}: ${points(k)} points"><small>${esc(s.short)}</small>${points(k)}</i>`).join("");
+  $("score").innerHTML = activeSeats().map(k => { const s = SEATS[k]; return `<i class="${owned(k).length ? "" : "out"}" style="background:${s.hex};color:${s.ink}" title="${esc(s.name)}: ${points(k)} points"><small>${esc(s.short)}</small>${points(k)}</i>`; }).join("");
   drawManagers();
 }
 // desktop side panel: one card per manager, in turn order, with the one to play marked
 function drawManagers() {
   const box = $("mgrs"); if (!box) return;
   if (!S) { box.innerHTML = `<p class="side-empty">The managers appear here once the season starts.</p>`; return; }
-  const order = S.order || SEATS.map((_, k) => k);
+  const order = S.order || activeSeats();
   box.innerHTML = order.map(k => { const s = SEATS[k], mine = owned(k), pl = mine.reduce((a, id) => a + S.squad[id].length, 0), now = S.seat === k && !S.over && S.phase !== "setup";
     return `<div class="mgr${now ? " now" : ""}${mine.length || S.phase === "draft" ? "" : " out"}" style="--c:${s.hex};--ci:${s.ink}">
       <b class="sw"></b><div class="who"><strong>${esc(s.name)}</strong><small>${isHuman(k) ? (solo() ? "You" : "Player") : "Computer"}${now ? " · to play" : ""}</small></div>
@@ -1251,7 +1257,7 @@ function refresh() {
   if (S.phase !== "draft") bar(`${monthOf()} · ${Math.min(S.round, S.rounds)}/${S.rounds} · ${isHuman(S.seat) ? (solo() ? "your turn" : SEATS[S.seat].short) : SEATS[S.seat].name}`);
   if (S.over) return;
   if (S.phase === "draft") {
-    const left = PER_MANAGER - owned(S.seat).length;
+    const left = perManager() - owned(S.seat).length;
     bar(`The draft · ${SEATS[S.seat].short} to pick`);
     if (isHuman(S.seat)) hint(`<b>${solo() ? "Your pick" : esc(SEATS[S.seat].name) + " to pick"}.</b> ${tapWord()} an unclaimed country. ${left} to go.`, `<button class="quiet" id="autoPick">Pick for me</button>`);
     else hint(`<b>${esc(SEATS[S.seat].name)}</b> is picking…`);
@@ -1484,6 +1490,7 @@ async function endTurn() {
 async function advance() {
   busy = true;
   for (;;) {
+    if (S.order.some(k => owned(k).length === IDS.length)) { busy = false; save(); return checkEnd(); }
     const n = S.order.length, prev = S.turn;
     S.turn = (S.turn + 1) % n;
     if (prev === n - 1) {   // the order went round: a new month
@@ -1504,6 +1511,7 @@ async function advance() {
 }
 // a human player's turn: sacked check, then (with more than one person) the pass-the-phone screen
 async function startTurn(seat, newRound) {
+  if (S.order.some(k => owned(k).length === IDS.length)) { busy = false; save(); return checkEnd(); }
   S.seat = seat; S.phase = "scout"; S.attacksLeft = RULES.attacksPerTurn; S.moved = false;
   if (!owned(seat).length) { toast(`<b>${esc(SEATS[seat].name)}</b> ${solo() ? "were" : "was"} sacked. New job!`); const nid = rehire(seat); busy = true; await dropIn(nid); busy = false; }
   save(); refresh();
@@ -1623,11 +1631,11 @@ async function lastStand(seat, from, to, A, defCap, sent = []) {
 
 /* ================= end + start ================= */
 function checkEnd() {
-  const alive = SEATS.map((s, k) => owned(k).length);
+  const alive = activeSeats().map(k => owned(k).length);
   const total = alive.findIndex(n => n === IDS.length);
   if (S.round <= S.rounds && total < 0) return;
   S.over = true; save(); sfx.whistle("full");
-  const rows = SEATS.map((s, k) => ({ s, k, pts: points(k), terr: owned(k).length, players: owned(k).reduce((a, id) => a + S.squad[id].length, 0) })).sort((a, b) => b.pts - a.pts);
+  const rows = activeSeats().map(k => ({ s: SEATS[k], k, pts: points(k), terr: owned(k).length, players: owned(k).reduce((a, id) => a + S.squad[id].length, 0) })).sort((a, b) => b.pts - a.pts);
   const win = isHuman(rows[0].k);
   bar("Full time");
   hint(`<b>${win ? (solo() ? "You win the World Tour." : esc(rows[0].s.name) + " wins the World Tour.") : esc(rows[0].s.name) + " wins this one."}</b>`, `<button class="pill" id="again">New game</button>`);
@@ -1649,8 +1657,8 @@ const d6 = () => 1 + Math.floor(Math.random() * 6);
 // everyone rolls two dice; the highest kicks off and the turns go round the table from there
 async function diceRoll() {
   layer.innerHTML = `<div class="over kickoff"><div class="card qcard"><div class="qtier">Kick-off</div><p class="intro">Who kicks off? Everyone rolls two dice; the highest total starts and the turns go round from there.</p></div>
-    <div class="dice-grid" id="diceGrid">${SEATS.map((s, k) => `<div class="dice-card" id="dc${k}" style="--c:${s.hex};--ci:${s.ink}"><div class="dc-head"><b class="sw"></b><strong>${esc(s.name)}</strong><small>${isHuman(k) ? (solo() ? "You" : "Player") : "Computer"}</small></div>
-      <div class="dc-dice" id="dd${k}">${dieSVG(1)}${dieSVG(1)}</div><div class="dc-foot" id="df${k}">${isHuman(k) ? `<button class="pill" data-roll="${k}">Roll the dice</button>` : `<span class="dc-wait">Waiting to roll</span>`}</div></div>`).join("")}</div>
+    <div class="dice-grid" id="diceGrid" style="--cols:${gameSize()}">${activeSeats().map(k => { const s = SEATS[k]; return `<div class="dice-card" id="dc${k}" style="--c:${s.hex};--ci:${s.ink}"><div class="dc-head"><b class="sw"></b><strong>${esc(s.name)}</strong><small>${isHuman(k) ? (solo() ? "You" : "Player") : "Computer"}</small></div>
+      <div class="dc-dice" id="dd${k}">${dieSVG(1)}${dieSVG(1)}</div><div class="dc-foot" id="df${k}">${isHuman(k) ? `<button class="pill" data-roll="${k}">Roll the dice</button>` : `<span class="dc-wait">Waiting to roll</span>`}</div></div>`; }).join("")}</div>
     <p class="intro" id="diceMsg" style="text-align:center"></p><div id="diceGo" style="text-align:center"></div></div>`;
   const total = {};
   const roll = (k) => new Promise(async res => {
@@ -1661,7 +1669,7 @@ async function diceRoll() {
     total[k] = a + b; $("df" + k).innerHTML = `<span class="dc-total">${a + b}</span>`;
     res();
   });
-  let rolling = SEATS.map((_, k) => k);
+  let rolling = activeSeats();
   for (;;) {
     const waits = rolling.map(k => isHuman(k)
       ? new Promise(r => { const b = layer.querySelector(`[data-roll="${k}"]`); if (b) b.onclick = () => roll(k).then(r); else roll(k).then(r); })
@@ -1670,7 +1678,8 @@ async function diceRoll() {
     const top = Math.max(...rolling.map(k => total[k])), tied = rolling.filter(k => total[k] === top);
     if (tied.length === 1) {
       const w = tied[0];
-      S.order = SEATS.map((_, i) => (w + i) % SEATS.length); S.turn = -1;
+      const seats = activeSeats(), wi = seats.indexOf(w);
+      S.order = seats.map((_, i) => seats[(wi + i) % seats.length]); S.turn = -1;
       $("dc" + w).classList.add("win"); sfx.cheer();
       $("diceMsg").innerHTML = `<b>${esc(SEATS[w].name)}</b> kick${solo() && w === 0 ? "" : "s"} off. Then ${S.order.slice(1).map(k => esc(SEATS[k].name)).join(", then ")}.`;
       feed(`<b>${esc(SEATS[w].name)}</b> won the dice roll and kicks off.`);
@@ -1702,7 +1711,7 @@ async function dealOut() {
   feed("The countries are dealt.");
   sfx.crowd(2.5, .12, 1600);
   for (let i = 0; i < ids.length; i++) {
-    const seat = i < PER_MANAGER * n ? S.order[i % n] : null;
+    const seat = i < perManager() * n ? S.order[i % n] : null;
     claim(ids[i], seat);
     if (gap) await sleep(gap);
   }
@@ -1725,7 +1734,7 @@ async function runDraft() {
   const n = S.order.length;
   S.draftI ||= 0;
   feed("The draft starts: pick a country each, in turn.");
-  while (S.draftI < PER_MANAGER * n) {
+  while (S.draftI < perManager() * n) {
     const seat = S.order[S.draftI % n];
     S.seat = seat; refresh();
     let id;
@@ -1740,7 +1749,7 @@ async function runDraft() {
 }
 async function kickOff(cfg) {
   const names = Array.from({ length: cfg.humans }, (_, k) => (cfg.names[k] || "").trim() || `Player ${k + 1}`);
-  newGame(cfg.rounds, cfg.scoutMode, cfg.humans, names); S.pens = cfg.pens; S.dealMode = cfg.deal;
+  newGame(cfg.rounds, cfg.scoutMode, Math.min(cfg.humans, cfg.managers || 4), names, cfg.managers || 4); S.pens = cfg.pens; S.dealMode = cfg.deal;
   closeSheet(); vb = homeView(); applyView(); paint(); busy = true;
   await diceRoll();
   if (S.dealMode === "draft") await runDraft(); else await dealOut();
@@ -1773,7 +1782,11 @@ async function showXI(seat, place) {
 }
 function startScreen() {
   store.del("tk-map-game"); S = null; sel = null; busy = false;
-  const cfg = Object.assign({ rounds: 10, scoutMode: "type", humans: 1, names: ["", "", "", ""], pens: true, deal: "deal" }, store.get("tk-map-cfg", {}));
+  const cfg = Object.assign({ rounds: 10, scoutMode: "type", humans: 1, names: ["", "", "", ""], pens: true, deal: "deal", managers: 4 }, store.get("tk-map-cfg", {}));
+  cfg.humans = Math.min(cfg.humans, cfg.managers);
+  const comps = cfg.managers - cfg.humans, plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+  const who = cfg.managers === 2 ? (cfg.humans === 1 ? "1 v 1 · you against a computer" : "1 v 1 · two players on one device")
+    : cfg.humans === 1 ? `you vs ${plural(comps, "computer manager")}` : `${cfg.humans} players${comps ? " + " + plural(comps, "computer") : ""}`;
   if ($("feed")) $("feed").innerHTML = "";
   for (let k = 0; k < SEATS.length; k++) { SEATS[k].name = BOT_NAMES[k]; SEATS[k].short = BOT_SHORT[k]; }
   bar("World Tour");
@@ -1783,7 +1796,7 @@ function startScreen() {
   for (const t of WORLD.territories) for (const el of [$("t-" + t.id), $("h-" + t.id)]) if (el) { el.style.fill = NEUTRAL.hex; el.style.fillOpacity = .7; }
   drawBadges(); GV.paint();
   layer.innerHTML = `<div class="over">
-    <div class="card qcard"><div class="qtier">World Tour · you vs 3 computer managers</div>
+    <div class="card qcard"><div class="qtier">World Tour · ${who}</div>
       <p class="intro">Take over the football world. Your armies are real players, and you sign them by naming them.</p></div>
     <ol class="rules">
       <li><b>Transfer window.</b> Tap one of your countries and name as many of its players as you can. Your time is 15 seconds + ½ per country you own + bonuses for full confederations.</li>
@@ -1795,8 +1808,9 @@ function startScreen() {
       <li>After the last round the most <b>points</b> wins: 1 per country, a bonus per full confederation, 1 per 5 players.</li>
     </ol>
     <div><p class="label">Rounds</p><div class="row">${[6, 10, 15].map(r => `<button class="chip" data-r="${r}" aria-pressed="${r === cfg.rounds}">${r}</button>`).join("")}</div></div>
-    <div><p class="label">Players on this phone</p><div class="row">${[1, 2, 3, 4].map(h => `<button class="chip" data-h="${h}" aria-pressed="${h === cfg.humans}">${h === 1 ? "Just me" : h}</button>`).join("")}</div>
-      <p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem;margin-top:6px">Pass and play: each person gets a colour and you pass the phone between turns. Computers fill the empty seats.</p>
+    <div><p class="label">Game size</p><div class="row">${[[2, "1 v 1"], [3, "3 managers"], [4, "4 managers"]].map(([n, l]) => `<button class="chip" data-n="${n}" aria-pressed="${n === cfg.managers}">${l}</button>`).join("")}</div></div>
+    <div><p class="label">Players on this ${isDesk() ? "computer" : "phone"}</p><div class="row">${[1, 2, 3, 4].filter(h => h <= cfg.managers).map(h => `<button class="chip" data-h="${h}" aria-pressed="${h === cfg.humans}">${h === 1 ? "Just me" : h}</button>`).join("")}</div>
+      <p class="label" style="text-transform:none;letter-spacing:0;font-family:var(--body);font-size:.85rem;margin-top:6px">Pass and play: each person gets a colour and you ${isDesk() ? "take turns at the computer" : "pass the phone between turns"}. Computers fill the empty seats.</p>
       <div class="names-in" id="namesIn"></div></div>
     <div><p class="label">The countries</p><div class="row"><button class="chip" data-d="deal" aria-pressed="${cfg.deal === "deal"}">Deal them out</button><button class="chip" data-d="draft" aria-pressed="${cfg.deal === "draft"}">Draft: pick in turn</button></div></div>
     <div><p class="label">Deciding penalty</p><div class="row"><button class="chip" data-p="1" aria-pressed="${cfg.pens}">On</button><button class="chip" data-p="0" aria-pressed="${!cfg.pens}">Off</button></div></div>
@@ -1810,7 +1824,9 @@ function startScreen() {
   const drawNames = () => { $("namesIn").innerHTML = cfg.humans < 2 ? "" : Array.from({ length: cfg.humans }, (_, k) => `<label><b style="background:${SEATS[k].hex}"></b><input id="nm${k}" maxlength="14" placeholder="Player ${k + 1} (${COLOURS[k]})" value="${esc(cfg.names[k] || "")}"></label>`).join("");
     for (let k = 0; k < cfg.humans; k++) { const i = $("nm" + k); if (i) i.oninput = () => { cfg.names[k] = i.value.trim(); store.set("tk-map-cfg", cfg); }; } };
   drawNames();
-  layer.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { cfg.humans = +b.dataset.h; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-h]").forEach(x => x.setAttribute("aria-pressed", x === b)); drawNames(); });
+  // the size and the players change the subtitle and the choices: redraw the screen
+  layer.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { cfg.humans = +b.dataset.h; store.set("tk-map-cfg", cfg); startScreen(); });
+  layer.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { cfg.managers = +b.dataset.n; cfg.humans = Math.min(cfg.humans, cfg.managers); store.set("tk-map-cfg", cfg); startScreen(); });
   layer.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { cfg.pens = b.dataset.p === "1"; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-p]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
   layer.querySelectorAll("[data-d]").forEach(b => b.onclick = () => { cfg.deal = b.dataset.d; store.set("tk-map-cfg", cfg); layer.querySelectorAll("[data-d]").forEach(x => x.setAttribute("aria-pressed", x === b)); });
   $("start").onclick = () => kickOff(cfg);
@@ -1836,11 +1852,14 @@ function openRules() {
       <p>Each squad is shown as little footballers wearing the shirts of players you signed. The colour of the base is the manager, the number under them is how many players stand there. One piece means 1–4 players, two pieces 5–9, three pieces 10 or more. The captain wears the armband.</p>
       <p>Tap <b>Globe</b> next to Sound to play on a spinnable globe instead of the flat map (and <b>Map</b> to switch back). Your game carries on either way.</p>
       <table><thead><tr><th>Manager</th><th>Plays</th></tr></thead><tbody>
-        ${SEATS.map((s, k) => `<tr><td><span class="sw" style="background:${s.hex}"></span>${esc(s.name)}</td><td>${isHuman(k) ? (solo() ? "That's you" : "Player") : "Computer"}</td></tr>`).join("")}
+        ${(S ? activeSeats() : SEATS.map((_, k) => k)).map(k => { const s = SEATS[k]; return `<tr><td><span class="sw" style="background:${s.hex}"></span>${esc(s.name)}</td><td>${isHuman(k) ? (solo() ? "That's you" : "Player") : "Computer"}</td></tr>`; }).join("")}
         <tr><td><span class="sw" style="background:${NEUTRAL.hex}"></span>Unclaimed</td><td>Nobody, free to take</td></tr></tbody></table></section>
 
+    <section><h3>Game size</h3>
+      <p>Play a <b>1 v 1</b> (you against a computer, or two people on one device), or with <b>3 or 4 managers</b>. The computers fill the seats that no person takes. <b>New game</b> at the top starts over at any moment between moves.</p></section>
+
     <section><h3>Kick-off</h3>
-      <p>Everyone rolls two dice. The highest total kicks off and the turns go round the table from there (ties roll again). Then the countries are handed out: <b>dealt</b> at random, ${PER_MANAGER} each, or <b>drafted</b>, where everyone picks an unclaimed country in turn until they have ${PER_MANAGER}. The countries nobody gets stay unclaimed with a small squad. Every country starts with 3 players.</p></section>
+      <p>Everyone rolls two dice. The highest total kicks off and the turns go round the table from there (ties roll again). Then the countries are handed out: <b>dealt</b> at random, or <b>drafted</b>, where everyone picks an unclaimed country in turn. With four managers that's 10 each (two stay unclaimed), with three 14 each, and in a 1 v 1 21 each. The countries nobody gets stay unclaimed with a small squad. Every country starts with 3 players.</p></section>
 
     <section><h3>Your turn <span>three steps</span></h3>
       <p>Every turn has the same order: <b>scout</b>, then <b>attack</b>, then <b>end turn</b>. Moving players can happen any time during the attack step.</p></section>
@@ -1933,6 +1952,26 @@ function openRules() {
   $("rbClose").focus();
 }
 $("rulesBtn").onclick = openRules;
+// a new game at any time (between moves), with an in-page check so a season isn't lost by accident
+function askNewGame() {
+  if (!S) return;
+  const nb = $("newBtn");
+  if (busy) { feed("Finish this move first, then you can start a new game."); toast("Finish this move first, then you can start a new game."); nb.textContent = "After this move"; setTimeout(() => nb.textContent = "New game", 1800); return; }
+  if ($("confirmNew")) return;
+  const el = document.createElement("div"); el.className = "confirm"; el.id = "confirmNew"; el.setAttribute("role", "dialog"); el.setAttribute("aria-label", "Start a new game");
+  el.innerHTML = `<div class="confirm-card"><h2>Start a new game?</h2>
+    <p>${S.over ? "This season is over." : `This season (${esc(monthOf())}, round ${Math.min(S.round, S.rounds)} of ${S.rounds}) will be lost.`} You'll go back to the start screen to pick the game size and players.</p>
+    <div class="row"><button class="pill" id="ngYes">Start a new game</button><button class="quiet" id="ngNo">Keep playing</button></div></div>`;
+  $("mapwrap").appendChild(el);
+  const close = () => el.remove();
+  $("ngNo").onclick = close; $("ngYes").focus();
+  el.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+  $("ngYes").onclick = () => {
+    close(); document.querySelectorAll(".pass, #rulebook").forEach(x => x.remove());
+    draftPick = null; fast = false; sel = null; startScreen();
+  };
+}
+$("newBtn").onclick = askNewGame;
 const sndBtn = $("snd");
 sndBtn.setAttribute("aria-pressed", sfx.on); sndBtn.textContent = sfx.on ? "Sound" : "Muted";
 sndBtn.onclick = () => { const on = sfx.toggle(); sndBtn.setAttribute("aria-pressed", on); sndBtn.textContent = on ? "Sound" : "Muted"; };
